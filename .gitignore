@@ -1,0 +1,21 @@
+# Gradle / Android
+.gradle/
+build/
+app/build/
+app/.cxx/
+local.properties
+*.iml
+.idea/
+captures/
+.externalNativeBuild/
+.cxx/
+
+# Keystores / secrets
+*.jks
+*.keystore
+
+# OS
+.DS_Store
+
+# NOTE: third_party/llama.cpp is a git submodule — do NOT ignore it,
+# it is pinned by .gitmodules and checked out by CI.
