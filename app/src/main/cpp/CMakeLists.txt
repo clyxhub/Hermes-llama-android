@@ -34,9 +34,12 @@ target_include_directories(hermes_llama PRIVATE
     ${LLAMA_DIR}/common
     ${LLAMA_DIR}/ggml/include)
 
+# In this llama.cpp revision the common library target is `llama-common`
+# (outputs libllama-common.a); passing `common` makes ld.lld fail with
+# "unable to find library -lcommon".
 target_link_libraries(hermes_llama
     llama
-    common
+    llama-common
     ggml
     android
     log)
