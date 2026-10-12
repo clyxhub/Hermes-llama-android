@@ -114,6 +114,22 @@ Java_com_hermes_llama_LlamaBridge_nativeLoadModel(
     // (e.g. 99) offloads every layer the Vulkan backend can hold.
     mparams.n_gpu_layers = nGpuLayers < 0 ? 0 : nGpuLayers;
 
+    // HERMES-PATCH(cpu-only-devices): when GPU offload is disabled, restrict the
+    // model to the CPU device. If `devices` is left NULL, the scheduler registers
+    // ALL backends (including Vulkan); even with n_gpu_layers = 0 that pulls the
+    // Vulkan buffer into the graph (sched_reserve: Vulkan0 compute buffer ~900MiB,
+    // splits = 388/1) and measurably slows inference vs. the CPU-only build.
+    if (nGpuLayers <= 0) {
+        ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+        if (cpu_dev != nullptr) {
+            static ggml_backend_dev_t hermes_cpu_devices[2];
+            hermes_cpu_devices[0] = cpu_dev;
+            hermes_cpu_devices[1] = nullptr;
+            mparams.devices = hermes_cpu_devices;
+            LOGI("HERMES: CPU-only mode - restricting model devices to CPU");
+        }
+    }
+
     g_session.model = llama_model_load_from_file(path.c_str(), mparams);
     if (!g_session.model) {
         LOGE("failed to load model: %s", path.c_str());
