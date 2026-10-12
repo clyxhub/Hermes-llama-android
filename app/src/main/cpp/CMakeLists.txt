@@ -10,6 +10,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Stage (b) flips GGML_VULKAN=ON; stage (g) adds the QNN flavour.
 # ---------------------------------------------------------------------------
 set(LLAMA_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../../../../third_party/llama.cpp)
+get_filename_component(LLAMA_DIR ${LLAMA_DIR} ABSOLUTE)
 
 if(EXISTS ${LLAMA_DIR}/CMakeLists.txt)
     set(LLAMA_BUILD_COMMON ON  CACHE BOOL "" FORCE)
@@ -39,6 +40,3 @@ target_link_libraries(hermes_llama
     ggml
     android
     log)
-
-find_library(log-lib log)
-target_link_libraries(hermes_llama ${log-lib})
