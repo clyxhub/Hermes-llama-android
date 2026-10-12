@@ -11,6 +11,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout (with llama.cpp submodule)
         uses: actions/checkout@v4
@@ -71,7 +74,25 @@ jobs:
       - name: Build release APK
         run: |
           chmod +x ./gradlew
-          ./gradlew --no-daemon assembleRelease
+          set +e
+          ./gradlew --no-daemon assembleRelease > gradle-build.log 2>&1
+          RC=$?
+          echo "gradlew exit code: $RC"
+          tail -n 120 gradle-build.log || true
+          exit $RC
+
+      - name: Publish build log (diagnostics)
+        if: failure()
+        continue-on-error: true
+        run: |
+          git config user.email "ci@hermes.local"
+          git config user.name "Hermes CI"
+          mkdir -p ci-logs
+          cp gradle-build.log ci-logs/last-build.log 2>/dev/null || echo "(no gradle-build.log)" > ci-logs/last-build.log
+          git checkout -B ci-diagnostics
+          git add -f ci-logs/last-build.log
+          git commit -m "CI diagnostics for run ${{ github.run_number }}" || true
+          git push -f origin ci-diagnostics
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
