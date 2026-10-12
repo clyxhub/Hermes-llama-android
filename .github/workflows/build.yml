@@ -54,7 +54,9 @@ jobs:
           echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Build release APK
-        run: ./gradlew --no-daemon assembleRelease
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon assembleRelease
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
