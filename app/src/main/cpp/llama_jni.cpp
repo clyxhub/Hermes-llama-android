@@ -9,7 +9,7 @@
 //   - mmproj / multimodal projection       -> stage (c)
 //   - HTTP server (llama-server embed)     -> stage (d)
 //   - sampler presets / thinking mode      -> stage (e)
-//   - GPU offload (-ngl) + auto-tuner      -> stage (b)
+//   - GPU offload (-ngl) + auto-tuner      -> stage (b) [done: Vulkan]
 // ---------------------------------------------------------------------------
 
 #include <jni.h>
@@ -42,6 +42,20 @@ struct LlamaSession {
 // One global session for stage (a). Multi-model comes later.
 LlamaSession g_session;
 
+// Route llama.cpp / ggml log output (backend enumeration + the
+// "offloaded N/N layers to GPU" line) into logcat so GPU offload is
+// observable with:  adb logcat -s HermesLlama-native
+void hermes_log_callback(ggml_log_level level, const char* text, void* /*user*/) {
+    int prio;
+    switch (level) {
+        case GGML_LOG_LEVEL_ERROR: prio = ANDROID_LOG_ERROR; break;
+        case GGML_LOG_LEVEL_WARN:  prio = ANDROID_LOG_WARN;  break;
+        case GGML_LOG_LEVEL_DEBUG: prio = ANDROID_LOG_DEBUG; break;
+        default:                   prio = ANDROID_LOG_INFO;  break;
+    }
+    __android_log_print(prio, "HermesLlama-native", "%s", text ? text : "");
+}
+
 std::string jstring_to_std(JNIEnv* env, jstring s) {
     if (!s) return {};
     const char* c = env->GetStringUTFChars(s, nullptr);
@@ -56,8 +70,14 @@ extern "C" {
 
 JNIEXPORT jint JNICALL
 Java_com_hermes_llama_LlamaBridge_nativeInit(JNIEnv*, jobject) {
+    // Forward native logs to logcat *before* touching the backend so that
+    // backend enumeration (Vulkan device discovery) is captured.
+    llama_log_set(hermes_log_callback, nullptr);
+    ggml_log_set(hermes_log_callback, nullptr);
+
     llama_backend_init();
-    LOGI("llama backend initialised");
+    LOGI("llama backend initialised (gpu_offload_supported=%d)",
+         llama_supports_gpu_offload() ? 1 : 0);
     return 0;
 }
 
@@ -69,12 +89,12 @@ Java_com_hermes_llama_LlamaBridge_nativeSystemInfo(JNIEnv* env, jobject) {
 /**
  * Load a GGUF model. Returns 0 on success, negative on failure.
  *
- * nGpuLayers is accepted now but ignored in stage (a); stage (b) will honour it
- * to drive Vulkan offload.
+ * nGpuLayers drives GPU (Vulkan) offload since stage (b): 0 = CPU only, a
+ * large value (e.g. 99) offloads every layer the backend can hold.
  */
 JNIEXPORT jint JNICALL
 Java_com_hermes_llama_LlamaBridge_nativeLoadModel(
-        JNIEnv* env, jobject, jstring jpath, jint nCtx, jint nThreads, jint /*nGpuLayers*/) {
+        JNIEnv* env, jobject, jstring jpath, jint nCtx, jint nThreads, jint nGpuLayers) {
 
     std::lock_guard<std::mutex> lock(g_session.infer_mutex);
 
@@ -90,7 +110,9 @@ Java_com_hermes_llama_LlamaBridge_nativeLoadModel(
     const std::string path = jstring_to_std(env, jpath);
 
     llama_model_params mparams = llama_model_default_params();
-    mparams.n_gpu_layers = 0; // stage (a): CPU only
+    // Stage (b): honour the GPU-layers request. 0 = CPU only; a large value
+    // (e.g. 99) offloads every layer the Vulkan backend can hold.
+    mparams.n_gpu_layers = nGpuLayers < 0 ? 0 : nGpuLayers;
 
     g_session.model = llama_model_load_from_file(path.c_str(), mparams);
     if (!g_session.model) {
@@ -115,7 +137,8 @@ Java_com_hermes_llama_LlamaBridge_nativeLoadModel(
     g_session.n_ctx = static_cast<int>(llama_n_ctx(g_session.ctx));
     g_session.cancel.store(false);
 
-    LOGI("model loaded: %s (n_ctx=%d, threads=%d)", path.c_str(), g_session.n_ctx, nThreads);
+    LOGI("model loaded: %s (n_ctx=%d, threads=%d, n_gpu_layers=%d)",
+         path.c_str(), g_session.n_ctx, nThreads, (int) mparams.n_gpu_layers);
     return 0;
 }
 

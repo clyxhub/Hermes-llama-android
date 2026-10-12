@@ -115,6 +115,28 @@ fun ChatScreen(vm: ChatViewModel = viewModel()) {
             Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(12.dp)) {
                     Text(state.status, style = MaterialTheme.typography.bodyMedium)
+
+                    // Stage (b): Vulkan GPU offload toggle. Applies on next load.
+                    Row(
+                        Modifier.fillMaxWidth().padding(top = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(Modifier.weight(1f)) {
+                            Text("GPU offload (Vulkan)", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                if (state.gpuLayers > 0) "offloading ${state.gpuLayers} layers"
+                                else "CPU only · applies on next model load",
+                                style = MaterialTheme.typography.labelSmall
+                            )
+                        }
+                        Switch(
+                            checked = state.gpuLayers > 0,
+                            onCheckedChange = { on ->
+                                vm.setGpuLayers(if (on) ChatViewModel.GPU_LAYERS_ALL else 0)
+                            }
+                        )
+                    }
+
                     if (state.preset != null) {
                         Text(
                             "${state.preset!!.family} · temp ${state.preset!!.temperature} · " +

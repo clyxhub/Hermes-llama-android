@@ -20,7 +20,9 @@ data class UiState(
     val streaming: String = "",
     val busy: Boolean = false,
     val status: String = "No model loaded",
-    val systemInfo: String = ""
+    val systemInfo: String = "",
+    /** Layers to offload to the Vulkan GPU backend; 0 = CPU only. */
+    val gpuLayers: Int = 0
 )
 
 class ChatViewModel : ViewModel() {
@@ -37,12 +39,13 @@ class ChatViewModel : ViewModel() {
         }
     }
 
-    /** Load a GGUF off local storage. CPU-only for stage (a). */
+    /** Load a GGUF off local storage, offloading [UiState.gpuLayers] layers to Vulkan. */
     fun loadModel(path: String) {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(status = "Loading…", busy = true) }
             val preset = PresetEngine.detect(path.substringAfterLast('/'))
-            val rc = runCatching { LlamaBridge.loadModel(path, preset.contextSize, 4, 0) }
+            val nGpuLayers = _state.value.gpuLayers
+            val rc = runCatching { LlamaBridge.loadModel(path, preset.contextSize, 4, nGpuLayers) }
                 .getOrDefault(-99)
 
             _state.update {
@@ -50,7 +53,8 @@ class ChatViewModel : ViewModel() {
                     modelPath = path,
                     preset = preset,
                     busy = false,
-                    status = "Loaded ${preset.family} · ctx ${LlamaBridge.contextSize()}"
+                    status = "Loaded ${preset.family} · ctx ${LlamaBridge.contextSize()}" +
+                        if (nGpuLayers > 0) " · GPU×$nGpuLayers" else " · CPU"
                 ) else it.copy(busy = false, status = "Load failed (code $rc)")
             }
         }
@@ -91,6 +95,14 @@ class ChatViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Set how many layers to offload to the Vulkan backend (0 = CPU only).
+     * Takes effect on the next [loadModel] call.
+     */
+    fun setGpuLayers(layers: Int) {
+        _state.update { it.copy(gpuLayers = layers.coerceAtLeast(0)) }
+    }
+
     fun stop() = LlamaBridge.cancel()
 
     override fun onCleared() {
@@ -100,5 +112,8 @@ class ChatViewModel : ViewModel() {
 
     companion object {
         private const val SYSTEM_PROMPT = "You are a helpful assistant running locally on the user's phone."
+
+        /** Sentinel meaning "offload as many layers as the backend can hold". */
+        const val GPU_LAYERS_ALL = 99
     }
 }

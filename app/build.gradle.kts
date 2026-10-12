@@ -3,6 +3,26 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+// ---------------------------------------------------------------------------
+// Stage (b): Vulkan GPU backend.
+//
+// llama.cpp's shader generator shells out to a *host* `glslc`. The NDK ships
+// one under shader-tools/ that matches the installed NDK, so prefer it when
+// present; the CI workflow also puts glslc on PATH as a fallback.
+// ---------------------------------------------------------------------------
+val ndkHostTag: String = when {
+    System.getProperty("os.name").lowercase().contains("mac") -> "darwin-x86_64"
+    System.getProperty("os.name").lowercase().contains("win") -> "windows-x86_64"
+    else -> "linux-x86_64"
+}
+
+val ndkGlslc: java.io.File? = listOfNotNull(
+    System.getenv("ANDROID_NDK_HOME"),
+    System.getenv("ANDROID_NDK_ROOT"),
+    System.getenv("ANDROID_HOME")?.let { "$it/ndk/26.1.10909125" },
+    System.getenv("ANDROID_SDK_ROOT")?.let { "$it/ndk/26.1.10909125" }
+).map { java.io.File(it, "shader-tools/$ndkHostTag/glslc") }.firstOrNull { it.isFile }
+
 android {
     namespace = "com.hermes.llama"
     compileSdk = 34
@@ -23,13 +43,17 @@ android {
 
         externalNativeBuild {
             cmake {
-                // Stage (a): CPU-only. Vulkan (stage b) adds -DGGML_VULKAN=ON.
+                // Stage (b): the Vulkan GPU backend is enabled in
+                // app/src/main/cpp/CMakeLists.txt (GGML_VULKAN=ON) together with
+                // the vendored Vulkan/SPIR-V dev-kit under src/main/cpp/vulkan.
                 arguments += listOf(
                     "-DCMAKE_BUILD_TYPE=Release",
                     "-DGGML_LLAMAFILE=OFF",
                     "-DLLAMA_CURL=OFF",
                     "-DGGML_OPENMP=OFF"
                 )
+                // Pin the host glslc used by llama.cpp's shader generator.
+                ndkGlslc?.let { arguments += "-DVulkan_GLSLC_EXECUTABLE=${it.absolutePath}" }
                 cppFlags += "-O3"
             }
         }

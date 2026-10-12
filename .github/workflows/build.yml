@@ -31,6 +31,14 @@ jobs:
           log-accepted-android-sdk-licenses: false
 
 
+      - name: Install host glslc (Vulkan shader compiler)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y glslc
+          # Also expose the NDK-bundled glslc as a fallback for CMake's
+          # find_program(Vulkan_GLSLC_EXECUTABLE).
+          echo "${ANDROID_NDK_HOME:-$ANDROID_HOME/ndk/26.1.10909125}/shader-tools/linux-x86_64" >> "$GITHUB_PATH"
+
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
@@ -52,6 +60,13 @@ jobs:
           ls "$ANDROID_HOME/cmake" || true
           ls third_party/llama.cpp | head -20
           echo "sdk.dir=$ANDROID_HOME" > local.properties
+          echo "--- glslc (Vulkan shader compiler) ---"
+          which glslc || true
+          glslc --version | head -3 || true
+          echo "--- vendored Vulkan dev-kit ---"
+          ls app/src/main/cpp/vulkan
+          ls app/src/main/cpp/vulkan/vulkan | head -6
+          ls app/src/main/cpp/vulkan/spirv/unified1 | head -4
 
       - name: Build release APK
         run: |
