@@ -32,7 +32,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     private val prefs = application.getSharedPreferences("hermes_llama", Context.MODE_PRIVATE)
 
-    private val _state = MutableStateFlow(UiState(gpuLayers = prefs.getInt(KEY_GPU_LAYERS, 0)))
+    private val _state = MutableStateFlow(
+        UiState(
+            gpuLayers = prefs.getInt(KEY_GPU_LAYERS, 0),
+            messages = loadHistory()
+        )
+    )
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     init {
@@ -48,6 +53,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 else prefs.edit().remove(KEY_LAST_MODEL).apply()
             }
         }
+    }
+
+    /**
+     * Persist the conversation to SharedPreferences as JSON so it survives
+     * app restarts (messages are tiny; no need for a database).
+     */
+    private fun saveHistory(messages: List<ChatMessage>) {
+        val arr = org.json.JSONArray()
+        messages.forEach { arr.put(org.json.JSONObject().put("role", it.role).put("content", it.content)) }
+        prefs.edit().putString(KEY_HISTORY, arr.toString()).apply()
+    }
+
+    private fun loadHistory(): List<ChatMessage> = runCatching {
+        val arr = org.json.JSONArray(prefs.getString(KEY_HISTORY, "[]")!!)
+        (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            ChatMessage(o.getString("role"), o.getString("content"))
+        }
+    }.getOrDefault(emptyList())
+
+    /** Clears the saved conversation. */
+    fun clearChat() {
+        saveHistory(emptyList())
+        _state.update { it.copy(messages = emptyList(), streaming = "", status = "Chat cleared") }
     }
 
     /** Load a GGUF off local storage, offloading [UiState.gpuLayers] layers to Vulkan. */
@@ -80,6 +109,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         if (input.isBlank() || s.busy) return
 
         val history = s.messages + ChatMessage("user", input)
+        saveHistory(history)
         _state.update {
             it.copy(messages = history, streaming = "", busy = true, status = "Generating…")
         }
@@ -104,8 +134,10 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             withContext(Dispatchers.Main) {
                 _state.update {
+                    val finalMessages = it.messages + ChatMessage("assistant", sb.toString())
+                    saveHistory(finalMessages)
                     it.copy(
-                        messages = it.messages + ChatMessage("assistant", sb.toString()),
+                        messages = finalMessages,
                         streaming = "",
                         busy = false,
                         status = "Ready$speed"
@@ -144,5 +176,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         /** SharedPreferences key for the last successfully loaded model path. */
         private const val KEY_LAST_MODEL = "last_model_path"
+
+        /** SharedPreferences key for the persisted conversation. */
+        private const val KEY_HISTORY = "chat_history"
     }
 }

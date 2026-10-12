@@ -14,6 +14,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Send
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material3.*
@@ -72,6 +73,9 @@ fun ChatScreen(vm: ChatViewModel = viewModel()) {
             TopAppBar(
                 title = { Text("Hermes Llama") },
                 actions = {
+                    IconButton(onClick = { vm.clearChat() }) {
+                        Icon(Icons.Default.Delete, contentDescription = "Clear chat")
+                    }
                     IconButton(onClick = { picker.launch(arrayOf("*/*")) }) {
                         Icon(Icons.Default.Add, contentDescription = "Load model")
                     }
