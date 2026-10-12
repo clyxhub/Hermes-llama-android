@@ -6,6 +6,8 @@ plugins {
 android {
     namespace = "com.hermes.llama"
     compileSdk = 34
+    // Pinned to match the NDK installed in CI (.github/workflows/build.yml).
+    ndkVersion = "26.1.10909125"
 
     defaultConfig {
         applicationId = "com.hermes.llama"

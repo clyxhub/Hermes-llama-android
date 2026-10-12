@@ -23,9 +23,13 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
-
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-34 build-tools;34.0.0 ndk;26.1.10909125 cmake;3.22.1'
+          accept-android-sdk-licenses: true
+          log-accepted-android-sdk-licenses: false
+
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -42,9 +46,12 @@ jobs:
         run: |
           java -version
           echo "ANDROID_HOME=$ANDROID_HOME"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT"
           echo "ANDROID_NDK_HOME=$ANDROID_NDK_HOME"
           ls "$ANDROID_HOME/ndk" || true
+          ls "$ANDROID_HOME/cmake" || true
           ls third_party/llama.cpp | head -20
+          echo "sdk.dir=$ANDROID_HOME" > local.properties
 
       - name: Build release APK
         run: ./gradlew --no-daemon assembleRelease
