@@ -1,6 +1,8 @@
 package com.hermes.llama
 
-import androidx.lifecycle.ViewModel
+import android.app.Application
+import android.content.Context
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -25,9 +27,11 @@ data class UiState(
     val gpuLayers: Int = 0
 )
 
-class ChatViewModel : ViewModel() {
+class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val _state = MutableStateFlow(UiState())
+    private val prefs = application.getSharedPreferences("hermes_llama", Context.MODE_PRIVATE)
+
+    private val _state = MutableStateFlow(UiState(gpuLayers = prefs.getInt(KEY_GPU_LAYERS, 0)))
     val state: StateFlow<UiState> = _state.asStateFlow()
 
     init {
@@ -100,7 +104,11 @@ class ChatViewModel : ViewModel() {
      * Takes effect on the next [loadModel] call.
      */
     fun setGpuLayers(layers: Int) {
-        _state.update { it.copy(gpuLayers = layers.coerceAtLeast(0)) }
+        val v = layers.coerceAtLeast(0)
+        _state.update { it.copy(gpuLayers = v) }
+        // Persist so the choice survives app restarts (the toggle only takes
+        // effect at model-load time, so it must still be set on next launch).
+        prefs.edit().putInt(KEY_GPU_LAYERS, v).apply()
     }
 
     fun stop() = LlamaBridge.cancel()
@@ -112,8 +120,10 @@ class ChatViewModel : ViewModel() {
 
     companion object {
         private const val SYSTEM_PROMPT = "You are a helpful assistant running locally on the user's phone."
-
         /** Sentinel meaning "offload as many layers as the backend can hold". */
         const val GPU_LAYERS_ALL = 99
+
+        /** SharedPreferences key for the persisted GPU-layers setting. */
+        private const val KEY_GPU_LAYERS = "gpu_layers"
     }
 }
