@@ -11,6 +11,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 data class ChatMessage(val role: String, val content: String)
 
@@ -40,6 +41,12 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 LlamaBridge.init()
                 _state.update { it.copy(systemInfo = LlamaBridge.systemInfo()) }
             }
+            // Quick win: remember the last-used model and auto-load it on start
+            // so the user doesn't have to re-pick the .gguf every launch.
+            prefs.getString(KEY_LAST_MODEL, null)?.let { last ->
+                if (File(last).exists()) loadModel(last)
+                else prefs.edit().remove(KEY_LAST_MODEL).apply()
+            }
         }
     }
 
@@ -61,6 +68,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                         if (nGpuLayers > 0) " · GPU×$nGpuLayers" else " · CPU"
                 ) else it.copy(busy = false, status = "Load failed (code $rc)")
             }
+            if (rc == 0) {
+                prefs.edit().putString(KEY_LAST_MODEL, path).apply()
+            }
         }
     }
 
@@ -77,6 +87,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             val prompt = PresetEngine.applyTemplate(preset, SYSTEM_PROMPT, input)
             val sb = StringBuilder()
+            val startedAt = System.currentTimeMillis()
 
             runCatching {
                 LlamaBridge.generate(prompt, 512, preset.temperature, preset.topP) { token ->
@@ -86,13 +97,18 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
 
+            // Quick win: tokens/sec readout for the finished response.
+            val elapsedMs = System.currentTimeMillis() - startedAt
+            val tokPerSec = if (elapsedMs > 0) sb.length * 1000.0 / elapsedMs / 4.0 else 0.0
+            val speed = if (tokPerSec >= 1.0) " · %.1f tok/s".format(tokPerSec) else ""
+
             withContext(Dispatchers.Main) {
                 _state.update {
                     it.copy(
                         messages = it.messages + ChatMessage("assistant", sb.toString()),
                         streaming = "",
                         busy = false,
-                        status = "Ready"
+                        status = "Ready$speed"
                     )
                 }
             }
@@ -125,5 +141,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
         /** SharedPreferences key for the persisted GPU-layers setting. */
         private const val KEY_GPU_LAYERS = "gpu_layers"
+
+        /** SharedPreferences key for the last successfully loaded model path. */
+        private const val KEY_LAST_MODEL = "last_model_path"
     }
 }
