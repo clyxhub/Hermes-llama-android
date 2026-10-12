@@ -64,6 +64,34 @@ if(EXISTS "${HERMES_VK_SRC}")
     endif()
 endif()
 
+# ---------------------------------------------------------------------------
+# HERMES-PATCH(vulkan-device-memory)
+#
+# ggml_backend_vk_get_device_memory() calls vkdev.getMemoryProperties2() -
+# a Vulkan 1.1 physical-device command resolved through the default
+# dispatcher. On some Android loaders/drivers that slot is left NULL even
+# after init(device), so the call jumps to 0x0 -> SIGSEGV (pc 0x0) inside
+# ggml_backend_vk_get_device_memory during model load with GPU offload on.
+# Guard it and fall back to the Vulkan 1.0 vkGetPhysicalDeviceMemoryProperties.
+# ---------------------------------------------------------------------------
+if(EXISTS "${HERMES_VK_SRC}")
+    file(READ "${HERMES_VK_SRC}" HERMES_VK_TXT2)
+    string(FIND "${HERMES_VK_TXT2}" "HERMES-PATCH(vulkan-device-memory)" HERMES_VK2_HAS_PATCH)
+    if(HERMES_VK2_HAS_PATCH EQUAL -1)
+        set(HERMES_VK2_ANCHOR "vkdev.getMemoryProperties2(&memprops);")
+        set(HERMES_VK2_REPLACEMENT "        // HERMES-PATCH(vulkan-device-memory): getMemoryProperties2 is a Vulkan 1.1\\n        // physical-device command; on some Android loaders its dispatcher slot stays\\n        // NULL and the call jumps to 0x0. Fall back to the Vulkan 1.0 entry point.\\n        if (VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceMemoryProperties2 != nullptr) {\\n            vkdev.getMemoryProperties2(&memprops);\\n        } else {\\n            GGML_LOG_WARN(\"HermesLlama-vk: vkGetPhysicalDeviceMemoryProperties2 unresolved - using 1.0 fallback (memory budget disabled)\\\\n\");\\n            memprops.pNext = nullptr;\\n            memprops.memoryProperties = vkdev.getMemoryProperties();\\n        }")
+        string(REPLACE "${HERMES_VK2_ANCHOR}" "${HERMES_VK2_REPLACEMENT}" HERMES_VK2_NEW "${HERMES_VK_TXT2}")
+        if(NOT HERMES_VK2_NEW STREQUAL HERMES_VK_TXT2)
+            file(WRITE "${HERMES_VK_SRC}" "${HERMES_VK2_NEW}")
+            message(STATUS "hermes: applied ggml-vulkan device-memory patch")
+        else()
+            message(WARNING "hermes: ggml-vulkan device-memory anchor not found; patch NOT applied")
+        endif()
+    else()
+        message(STATUS "hermes: ggml-vulkan device-memory patch already present")
+    endif()
+endif()
+
 if(EXISTS ${LLAMA_DIR}/CMakeLists.txt)
     set(LLAMA_BUILD_COMMON ON  CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_TESTS  OFF CACHE BOOL "" FORCE)
