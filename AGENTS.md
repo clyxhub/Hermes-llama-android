@@ -53,6 +53,7 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
 | 2026-10-13 | **Rejected #2 as already-implemented**: media already reaches mtmd as a **file path** (`mtmd_helper_bitmap_init_from_file` — no JVM raw-frame buffering), and the projector already runs on **CPU** (`p.use_gpu = false`). No change | verified in `llama_jni.cpp` |
 | 2026-10-13 | **Rejected #3** (per-connection KV slots + priority-LRU eviction): this app does NOT create a context per connection — one global session, one context, serialized by `LocalServer.inferLock` + `g_session.infer_mutex`. There are no per-thread KV slots to evict, so the premise is false here; building an eviction manager would be over-engineering | avoids work built on a wrong model of the architecture |
 | 2026-10-13 | **Rejected #4 as already-satisfied**: mmap is the default (`load_mode = LLAMA_LOAD_MODE_AUTO` → `LLAMA_LOAD_MODE_MMAP`); the code never disables it. No change | verified in `llama-model.cpp` (`llama_model_default_params`) |
+| 2026-10-13 | **17th requirement — hardware-fit warning** in the HuggingFace section: new `DeviceFit.kt` reads the real memory profile (`ActivityManager.MemoryInfo.totalMem`/`availMem` + `largeMemoryClass`) and grades a model (plus its paired mmproj) **GREEN** (just right, ≤45% of total RAM) / **YELLOW** (barely fits, ≤80%) / **RED** (too big, >80%), nudged one level worse when the file exceeds *currently free* RAM. **Advisory only — download is never gated**; a device-summary line plus a coloured dot + label render per file | user: "reads the user's phone hardware and checks if a model is too big … red / yellow / green … it shouldn't prevent download either way, it's just a warning system" |
 
 ---
 
@@ -74,7 +75,8 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
 | **14th requirement — general artifact pipeline** | DONE | 99c73d4 | new `Artifact.kt` (data model + `ArtifactStore` + `ArtifactScanner`) and `ArtifactViewer.kt` (card + interactive viewer: image/audio/video/text inline, HTML **testable in an in-app WebView**); `Msg.artifacts` + `ChatStore` persistence; `ChatViewModel` scans every reply (Markdown/bare URLs, base64 fields, data-URIs) and materialises files into `filesDir/generated`; `MainActivity` renders a card under each assistant bubble + hosts the viewer; `FileProvider` (`@xml/file_paths`) enables share/open; "Save" exports to public Downloads via MediaStore. Build 38404602086 green. |
 | **15th requirement — mDNS for the live server** | DONE | (this flow) | `MdnsResponder.kt` (dependency-free mDNS/DNS-SD: A + PTR + SRV + TXT over `MulticastSocket` + `MulticastLock`); wired into `ServerService` (start on LAN bind, stop on stop/destroy; notification shows the mDNS URL); `ACCESS_WIFI_STATE` + `CHANGE_WIFI_MULTICAST_STATE` added to the manifest; Settings gains a "LAN access (mDNS)" switch + an editable "Server name" (prefs `mdns_lan` / `mdns_host`). LAN users type `http://calisto-local.local:8080/v1`. |
 | **16th requirement — rename to "CALISTO local ai"** | DONE | (this flow) | `app_name` (strings.xml) + drawer title + Info heading + Settings About row + empty-chat copy + server notification title + artifact/web-search User-Agents all renamed. Package id stays `com.hermes.llama`. Folded into the SAME Rule-8 build as the 15th requirement. |
-| KV-cache quantization (advice #1) + mDNS join fix | DONE (pending build) | (this flow) | `nativeSetKvQuant` (0=f16 / 1=q8_0 / 2=q4_0) applied at both context-creation sites; `LlamaBridge.setKvQuant` + a Settings selector (default Q8_0) + an automatic f16 fallback if a model rejects it. Also fixes the `MdnsResponder.joinGroup` compile error that failed build 38407168408. One Rule-8 build for the batch. |
+| KV-cache quantization (advice #1) + mDNS join fix | DONE | c189f11, e21a7ad | `nativeSetKvQuant` (0=f16 / 1=q8_0 / 2=q4_0) applied at both context-creation sites; `LlamaBridge.setKvQuant` + a Settings selector (default Q8_0) + an automatic f16 fallback if a model rejects it. Also fixed the `MdnsResponder.joinGroup` compile errors. Build 38409453542 green. |
+| **17th requirement — hardware-fit warning (HuggingFace)** | DONE (pending build) | (this flow) | `DeviceFit.kt` grades each downloadable GGUF (+ its paired mmproj) GREEN / YELLOW / RED against the phone's real RAM, with a device-summary line and a coloured dot + label per file. Advisory only — downloads are never blocked. |
 
 ## DEVIATIONS (work outside plan order)
 - Auto-load last model + tok/s readout (`a9a4fba`) — not a plan stage
@@ -115,6 +117,8 @@ projector auto-pair + a real generation (needs a SAF file pick, UI-driven).
 
 | 38408362327 | c189f11 | failure | `:app:compileReleaseKotlin` — a single error: `MdnsResponder.kt:115:49 Type mismatch: inferred type is InetSocketAddress but InetAddress! was expected`. The 2-arg fix at :109 is correct, but the **1-arg** `joinGroup(SocketAddress)` overload does not exist on Android — only `joinGroup(InetAddress)` (deprecated) does. Fix: revert the fallback to `ms.joinGroup(group)`. Everything else in this batch (native `type_k`/`type_v` KV-quant C++, `LlamaBridge`, `ChatViewModel`, `SettingsScreen`) compiled clean — the C++ `buildCMakeRelease` task passed. |
 
+| 38409453542 | e21a7ad | success | `:app:compileReleaseKotlin` clean; APK built and installed. Validates the mDNS (15th) + rename (16th) + KV-cache quantization (advice #1) batch, with the corrected `MulticastSocket.joinGroup` calls. Green baseline the 17th-requirement (hardware-fit warning) batch builds on. |
+
 **v5 overhaul: DONE.** The single Rule-8 fix+restyle build (38391843182) is green and installed;
 this docs-only tracker update is pushed with `[skip ci]` so it does not consume another build.
 Still needs a GGUF present on-device to exercise a real load + projector auto-pair + MEMBUDGET.
@@ -145,6 +149,9 @@ User msg (paraphrased, high-expectation, verbatim intent):
     mDNS/DNS-SD so they can use e.g. `http://calisto-local.local:8080/v1`. (The user's example `.ai` becomes `.local`,
     the suffix mDNS actually resolves.)
 16. **Rename the app to "CALISTO local ai" (added mid-flow).**
+17. **Hardware-fit warning in the HuggingFace section (added mid-flow):** read the phone's real RAM/GPU and grade each
+    downloadable model GREEN (just right) / YELLOW (barely fits) / RED (too big). It must NOT prevent any download —
+    it is purely a warning so you know whether a model will fit your phone.
 
 Implementation surface (current flow):
 - New data layer: `ChatStore.kt` (multi-chat), `ModelRepository.kt` (local scan + mmproj pairing + cloud merge),

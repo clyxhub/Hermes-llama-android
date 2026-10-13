@@ -1,9 +1,11 @@
 package com.hermes.llama
 
 import android.content.Context
+import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Download
@@ -14,6 +16,7 @@ import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -76,6 +79,13 @@ private fun affinity(a: String, b: String): Int {
     return i
 }
 
+/** Red / yellow / green badge colour for a hardware-fit verdict. */
+private fun fitColor(fit: DeviceFit.Fit): Color = when (fit) {
+    DeviceFit.Fit.GREEN -> Color(0xFF2E7D32)
+    DeviceFit.Fit.YELLOW -> Color(0xFFF9A825)
+    DeviceFit.Fit.RED -> Color(0xFFC62828)
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HuggingFaceScreen(vm: ChatViewModel, onMenu: () -> Unit) {
@@ -83,6 +93,9 @@ fun HuggingFaceScreen(vm: ChatViewModel, onMenu: () -> Unit) {
     val scope = rememberCoroutineScope()
     val repo = HfState.openRepo
     val dlv = HfState.dlVersion
+    val ui by vm.state.collectAsState()
+    // 17th requirement: hardware-fit profile (advisory only).
+    val prof = remember(ui.gpuAvailable) { DeviceFit.profile(context, ui.gpuAvailable) }
 
     Scaffold(
         topBar = {
@@ -209,11 +222,25 @@ fun HuggingFaceScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                                 style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
                         }
                     }
-                    if (models.isNotEmpty()) item { Text("Model files", fontWeight = FontWeight.SemiBold) }
+                    if (models.isNotEmpty()) {
+                        item {
+                            Column(Modifier.fillMaxWidth().padding(8.dp)) {
+                                Text("Your phone: " + DeviceFit.deviceSummary(prof),
+                                    style = MaterialTheme.typography.labelSmall)
+                                Text("Advisory only - any model can still be downloaded.",
+                                    style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                        }
+                        item { Text("Model files", fontWeight = FontWeight.SemiBold) }
+                    }
                     items(models, key = { it.path }) { f ->
                         val best = projs.maxByOrNull { affinity(f.path.substringAfterLast('/'), it.path.substringAfterLast('/')) }
+                        val bytes = f.size + (best?.size ?: 0L)
                         FileRow(
                             f = f,
+                            fit = DeviceFit.evaluate(bytes, prof),
+                            fitDetail = DeviceFit.detail(bytes, prof),
                             extraLabel = if (best != null) "＋ Download mmproj" else null,
                             onDownload = {
                                 launchDownload(context, scope, vm, repo, listOf(f.path))
@@ -271,13 +298,27 @@ private fun FileRow(
     f: HuggingFaceClient.RepoFile,
     extraLabel: String?,
     onDownload: () -> Unit,
-    onExtra: (() -> Unit)?
+    onExtra: (() -> Unit)?,
+    fit: DeviceFit.Fit? = null,
+    fitDetail: String? = null
 ) {
     Card(Modifier.fillMaxWidth()) {
         Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text(f.path.substringAfterLast('/'), fontWeight = FontWeight.SemiBold, maxLines = 1)
-                Text(ModelRepository.formatSize(f.size), style = MaterialTheme.typography.labelSmall)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(ModelRepository.formatSize(f.size), style = MaterialTheme.typography.labelSmall)
+                    if (fit != null) {
+                        Spacer(Modifier.width(6.dp))
+                        Box(Modifier.size(8.dp).background(fitColor(fit), CircleShape))
+                        Spacer(Modifier.width(3.dp))
+                        Text(DeviceFit.label(fit), style = MaterialTheme.typography.labelSmall, color = fitColor(fit))
+                    }
+                }
+                if (fit != null && fitDetail != null) {
+                    Text(fitDetail, style = MaterialTheme.typography.labelSmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
             }
             val prog = HfState.downloads[f.path]
             if (prog != null) {
