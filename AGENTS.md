@@ -76,7 +76,7 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
 | **15th requirement — mDNS for the live server** | DONE | (this flow) | `MdnsResponder.kt` (dependency-free mDNS/DNS-SD: A + PTR + SRV + TXT over `MulticastSocket` + `MulticastLock`); wired into `ServerService` (start on LAN bind, stop on stop/destroy; notification shows the mDNS URL); `ACCESS_WIFI_STATE` + `CHANGE_WIFI_MULTICAST_STATE` added to the manifest; Settings gains a "LAN access (mDNS)" switch + an editable "Server name" (prefs `mdns_lan` / `mdns_host`). LAN users type `http://calisto-local.local:8080/v1`. |
 | **16th requirement — rename to "CALISTO local ai"** | DONE | (this flow) | `app_name` (strings.xml) + drawer title + Info heading + Settings About row + empty-chat copy + server notification title + artifact/web-search User-Agents all renamed. Package id stays `com.hermes.llama`. Folded into the SAME Rule-8 build as the 15th requirement. |
 | KV-cache quantization (advice #1) + mDNS join fix | DONE | c189f11, e21a7ad | `nativeSetKvQuant` (0=f16 / 1=q8_0 / 2=q4_0) applied at both context-creation sites; `LlamaBridge.setKvQuant` + a Settings selector (default Q8_0) + an automatic f16 fallback if a model rejects it. Also fixed the `MdnsResponder.joinGroup` compile errors. Build 38409453542 green. |
-| **17th requirement — hardware-fit warning (HuggingFace)** | DONE (pending build) | (this flow) | `DeviceFit.kt` grades each downloadable GGUF (+ its paired mmproj) GREEN / YELLOW / RED against the phone's real RAM, with a device-summary line and a coloured dot + label per file. Advisory only — downloads are never blocked. |
+| **17th requirement — hardware-fit warning (HuggingFace)** | DONE | e09c18f | `DeviceFit.kt` grades each downloadable GGUF (+ its paired mmproj) GREEN / YELLOW / RED against the phone's real RAM, with a device-summary line and a coloured dot + label per file. Advisory only — downloads are never blocked. |
 
 ## DEVIATIONS (work outside plan order)
 - Auto-load last model + tok/s readout (`a9a4fba`) — not a plan stage
@@ -118,6 +118,8 @@ projector auto-pair + a real generation (needs a SAF file pick, UI-driven).
 | 38408362327 | c189f11 | failure | `:app:compileReleaseKotlin` — a single error: `MdnsResponder.kt:115:49 Type mismatch: inferred type is InetSocketAddress but InetAddress! was expected`. The 2-arg fix at :109 is correct, but the **1-arg** `joinGroup(SocketAddress)` overload does not exist on Android — only `joinGroup(InetAddress)` (deprecated) does. Fix: revert the fallback to `ms.joinGroup(group)`. Everything else in this batch (native `type_k`/`type_v` KV-quant C++, `LlamaBridge`, `ChatViewModel`, `SettingsScreen`) compiled clean — the C++ `buildCMakeRelease` task passed. |
 
 | 38409453542 | e21a7ad | success | `:app:compileReleaseKotlin` clean; APK built and installed. Validates the mDNS (15th) + rename (16th) + KV-cache quantization (advice #1) batch, with the corrected `MulticastSocket.joinGroup` calls. Green baseline the 17th-requirement (hardware-fit warning) batch builds on. |
+
+| 38411993802 | e09c18f | success | `:app:compileReleaseKotlin` clean; APK built. The single Rule-8 build for the 17th-requirement batch (`DeviceFit.kt` + `HuggingFaceScreen.kt` wiring + docs). Confirms the advisory hardware-fit warning compiles and ships (download path untouched). |
 
 **v5 overhaul: DONE.** The single Rule-8 fix+restyle build (38391843182) is green and installed;
 this docs-only tracker update is pushed with `[skip ci]` so it does not consume another build.
