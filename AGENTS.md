@@ -113,6 +113,8 @@ projector auto-pair + a real generation (needs a SAF file pick, UI-driven).
 
 | 38407168408 | 227e922 | failure | `:app:compileReleaseKotlin` — a single error: `MdnsResponder.kt:108:38 Type mismatch: inferred type is InetAddress but SocketAddress! was expected`. Cause: modern `MulticastSocket` has no `joinGroup(InetAddress, NetworkInterface)`; the overload takes a `SocketAddress`. Fix: `joinGroup(InetSocketAddress(group, MDNS_PORT), nif)` (and the no-NIC fallback). Native CMake configure ran fine; the failure was Kotlin-only. Folded into the same build as the KV-quant work. |
 
+| 38408362327 | c189f11 | failure | `:app:compileReleaseKotlin` — a single error: `MdnsResponder.kt:115:49 Type mismatch: inferred type is InetSocketAddress but InetAddress! was expected`. The 2-arg fix at :109 is correct, but the **1-arg** `joinGroup(SocketAddress)` overload does not exist on Android — only `joinGroup(InetAddress)` (deprecated) does. Fix: revert the fallback to `ms.joinGroup(group)`. Everything else in this batch (native `type_k`/`type_v` KV-quant C++, `LlamaBridge`, `ChatViewModel`, `SettingsScreen`) compiled clean — the C++ `buildCMakeRelease` task passed. |
+
 **v5 overhaul: DONE.** The single Rule-8 fix+restyle build (38391843182) is green and installed;
 this docs-only tracker update is pushed with `[skip ci]` so it does not consume another build.
 Still needs a GGUF present on-device to exercise a real load + projector auto-pair + MEMBUDGET.

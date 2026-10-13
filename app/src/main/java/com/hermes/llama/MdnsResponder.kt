@@ -112,7 +112,7 @@ object MdnsResponder {
                 }
             }
         }
-        if (!joined) runCatching { ms.joinGroup(InetSocketAddress(group, MDNS_PORT)) }
+        if (!joined) runCatching { ms.joinGroup(group) }
     }
 
     private fun receiveLoop(ms: MulticastSocket) {
