@@ -22,6 +22,12 @@ object ModelRepository {
         "/sdcard/Android/data/com.hermes.llama/files/models"
     )
 
+    /** Scan roots from preferences, falling back to the defaults. */
+    fun rootsFrom(context: Context): List<String> =
+        context.getSharedPreferences("hermes_llama", Context.MODE_PRIVATE)
+            .getStringSet("model_roots", null)?.toList()?.takeIf { it.isNotEmpty() }
+            ?: defaultRoots()
+
     data class Entry(
         val id: String,
         val name: String,
@@ -87,6 +93,32 @@ object ModelRepository {
                 projector = bestProjector(m, projectors)
             )
         }.sortedBy { it.name.lowercase() }
+    }
+
+    /** All projector (mmproj/clip) GGUF files under the roots, for explicit pairing. */
+    fun scanProjectors(roots: List<String>, maxDepth: Int = 4): List<Entry> {
+        val out = mutableListOf<Entry>()
+        roots.forEach { root ->
+            val f = File(root)
+            if (!f.isDirectory) return@forEach
+            runCatching {
+                f.walkTopDown().maxDepth(maxDepth).forEach { file ->
+                    if (file.isFile && file.name.endsWith(".gguf", ignoreCase = true) && isProjector(file.name)) {
+                        out.add(
+                            Entry(
+                                id = "proj:" + file.absolutePath,
+                                name = file.name,
+                                subtitle = file.parentFile?.name ?: "",
+                                source = "projector",
+                                sizeBytes = file.length(),
+                                path = file.absolutePath
+                            )
+                        )
+                    }
+                }
+            }
+        }
+        return out.sortedBy { it.name.lowercase() }
     }
 
     /** Cloud entries for every model the user selected in the Providers screen. */

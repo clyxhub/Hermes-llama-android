@@ -23,17 +23,23 @@ data class UiState(
     val modelInfo: String = "",
     val models: List<ModelRepository.Entry> = emptyList(),
     val currentModelId: String? = null,
+    val currentModelPath: String? = null,
     val preset: PresetEngine.Preset? = null,
     val capabilities: ModelCapabilities = ModelCapabilities(),
     val gpuLayers: Int = 0,
+    val gpuAuto: Boolean = true,
+    val gpuAvailable: Boolean = false,
     val threads: Int = 4,
+    val contextSize: Int = 4096,
     val thinking: Boolean = false,
     val webSearch: Boolean = false,
     val attachment: String? = null,
     val attachmentIsAudio: Boolean = false,
     val serverRunning: Boolean = false,
     val serverPort: Int = 8080,
-    val providerSelectionVersion: Int = 0
+    val providerSelectionVersion: Int = 0,
+    /** All mmproj files discovered in the scan roots — the explicit pairing picker. */
+    val projectorChoices: List<ModelRepository.Entry> = emptyList()
 )
 
 class ChatViewModel(application: Application) : AndroidViewModel(application) {
@@ -48,19 +54,25 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     init {
         if (chats.isEmpty()) ChatStore.newChat(chats)
         if (currentId == null || chats.none { it.id == currentId }) currentId = chats.first().id
+
+        // GPU policy: AUTO by default (offload every layer the backend can hold).
         // Crash recovery: a GPU load that never completed means the process was
-        // killed mid-offload (Vulkan driver crash). Self-heal to CPU so the app
-        // cannot crash-loop on a bad GPU configuration.
-        var gpuPref = prefs.getInt(KEY_GPU_LAYERS, 0)
+        // killed mid-offload (Vulkan driver crash). Force CPU so the app cannot
+        // crash-loop on a bad GPU configuration.
+        var gpuPref = prefs.getInt(KEY_GPU_LAYERS, GPU_LAYERS_ALL)
+        var autoPref = prefs.getBoolean(KEY_GPU_AUTO, true)
         if (prefs.getBoolean(KEY_GPU_ATTEMPT, false)) {
             Log.w(TAG, "previous GPU load did not complete — disabling GPU offload (CPU mode)")
             gpuPref = 0
-            prefs.edit().putInt(KEY_GPU_LAYERS, 0).putBoolean(KEY_GPU_ATTEMPT, false).apply()
+            autoPref = false
+            prefs.edit().putInt(KEY_GPU_LAYERS, 0).putBoolean(KEY_GPU_AUTO, false)
+                .putBoolean(KEY_GPU_ATTEMPT, false).apply()
         }
         _state.value = UiState(
             chats = ordered(),
             current = current(),
             gpuLayers = gpuPref,
+            gpuAuto = autoPref,
             thinking = prefs.getBoolean(KEY_THINKING, false),
             webSearch = prefs.getBoolean(KEY_WEB, false),
             status = "No model loaded"
@@ -69,6 +81,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             runCatching {
                 LlamaBridge.init()
+                val gpu = LlamaBridge.supportsGpu()
+                _state.update { it.copy(gpuAvailable = gpu) }
                 Log.i(TAG, "system: " + LlamaBridge.systemInfo())
             }
             refreshModels()
@@ -123,12 +137,46 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             ?: ModelRepository.defaultRoots()
 
     private suspend fun refreshModels() = withContext(Dispatchers.IO) {
-        val list = runCatching { ModelRepository.all(getApplication(), roots()) }.getOrDefault(emptyList())
-        _state.update { it.copy(models = list) }
+        val r = roots()
+        val overrides = projectorOverrides()
+        val list = runCatching { ModelRepository.all(getApplication(), r) }.getOrDefault(emptyList())
+            .map { e ->
+                val p = e.path
+                if (p != null && overrides.containsKey(p)) {
+                    e.copy(projector = overrides[p]?.takeIf { it.isNotBlank() })
+                } else e
+            }
+        val projs = runCatching { ModelRepository.scanProjectors(r) }.getOrDefault(emptyList())
+        _state.update { it.copy(models = list, projectorChoices = projs) }
+        // Keep the embedded server catalogue in sync with the library so a running
+        // server lists every local GGUF and every selected cloud model.
+        LocalServer.updateCatalogue(LocalServer.cardsFrom(list))
+    }
+
+    /** Explicit model path -> projector path overrides (empty string means "none"). */
+    private fun projectorOverrides(): Map<String, String> =
+        prefs.getStringSet(KEY_PROJ_OVERRIDE, null)?.mapNotNull { entry ->
+            val i = entry.indexOf('\u0001')
+            if (i <= 0) null else entry.substring(0, i) to entry.substring(i + 1)
+        }?.toMap() ?: emptyMap()
+
+    /** Explicitly pair (or unpair with null) an mmproj with a local model. */
+    fun setProjector(modelPath: String, projectorPath: String?) {
+        val set = prefs.getStringSet(KEY_PROJ_OVERRIDE, null)?.toMutableSet() ?: mutableSetOf()
+        set.removeAll { it.startsWith(modelPath + "\u0001") }
+        if (projectorPath != null) set.add(modelPath + "\u0001" + projectorPath)
+        prefs.edit().putStringSet(KEY_PROJ_OVERRIDE, set).apply()
+        refreshModelsNow()
     }
 
     fun refreshModelsNow() {
         viewModelScope.launch { refreshModels() }
+    }
+
+    /** Effective GPU layer count: AUTO = all when a GPU backend exists, else CPU. */
+    private fun resolveGpu(): Int {
+        val s = _state.value
+        return if (s.gpuAuto) (if (LlamaBridge.supportsGpu()) GPU_LAYERS_ALL else 0) else s.gpuLayers
     }
 
     /** Load a library entry: local gguf (+ auto mmproj) or a cloud model. */
@@ -137,6 +185,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             _state.update {
                 it.copy(
                     currentModelId = entry.id,
+                    currentModelPath = null,
                     status = "Cloud: ${entry.providerName} · ${entry.name}",
                     modelInfo = "${entry.providerName} · ${entry.modelId}",
                     preset = PresetEngine.Preset("Cloud", 0.7f, 0.9f, 40, 8192, "none"),
@@ -151,8 +200,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch(Dispatchers.IO) {
             _state.update { it.copy(status = "Loading…", busy = true) }
             val preset0 = PresetEngine.detect(entry.name)
-            val cfg = AutoTuner.recommend(getApplication(), path, false)
-            var gpu = _state.value.gpuLayers
+            val gpuAvailable = LlamaBridge.supportsGpu()
+            val cfg = AutoTuner.recommend(getApplication(), path, gpuAvailable)
+            // AUTO: prefer the resolved policy; otherwise honour the tuned/manual value.
+            var gpu = resolveGpu()
+            if (gpu <= 0 && _state.value.gpuAuto && cfg.gpuLayers > 0) gpu = cfg.gpuLayers
             Log.i(TAG, "loadModel path=$path ctx=${preset0.contextSize} threads=${cfg.threads} ngl=$gpu")
 
             // Mark the attempt in-flight: if the process dies here, init() will
@@ -175,15 +227,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val preset = PresetEngine.refine(preset0)
             val info = PresetEngine.describeModel()
 
+            val ov = projectorOverrides()[path]
+            val projPath = if (ov != null) ov.takeIf { it.isNotBlank() } else entry.projector
             var projectorOk = false
-            entry.projector?.let { p ->
+            projPath?.let { p ->
                 projectorOk = runCatching { LlamaBridge.loadProjector(p, cfg.threads) }.getOrDefault(-1) == 0
             }
             val caps = ModelCapabilities.ofLoadedModel(reasoning = preset.reasoning)
             val backend = if (gpu > 0) "GPUx$gpu" else "CPU"
 
             AutoTuner.record(getApplication(), path, AutoTuner.Config(cfg.threads, gpu))
-            prefs.edit().putString(KEY_LAST_MODEL, path).apply()
 
             // Publish the loaded model to the embedded server.
             LocalServer.updateModel(
@@ -195,8 +248,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
             _state.update {
                 it.copy(
-                    currentModelId = entry.id, busy = false, preset = preset, capabilities = caps,
-                    threads = cfg.threads, thinking = preset.reasoning,
+                    currentModelId = entry.id, currentModelPath = path,
+                    busy = false, preset = preset, capabilities = caps,
+                    threads = cfg.threads, contextSize = preset.contextSize,
+                    thinking = if (prefs.getBoolean(KEY_THINKING_MANUAL, false)) it.thinking else preset.reasoning,
+                    gpuLayers = if (gpu > 0) gpu else it.gpuLayers,
                     modelInfo = "$info · $backend · ${cfg.threads} threads" + if (projectorOk) " · projector ok" else "",
                     status = "Loaded ${preset.family} · ctx ${LlamaBridge.contextSize()} · $backend"
                 )
@@ -221,11 +277,29 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         return viaModel ?: PresetEngine.applyTemplate(preset, SYSTEM_PROMPT, turns.lastOrNull()?.content ?: "")
     }
 
-    /** Remove a chain-of-thought trace when thinking mode is off. */
+    /** Remove a chain-of-thought trace (closed, or still-open) when thinking is off. */
     private fun stripThinking(text: String): String {
-        val close = "\u003C/think\u003E"
-        return if (text.contains(close)) text.substringAfter(close).trim() else text
+        var t = text
+        if (t.contains(THINK_CLOSE)) t = t.substringAfterLast(THINK_CLOSE)
+        else if (t.contains(THINK_OPEN)) t = t.substringBefore(THINK_OPEN)
+        return t.trim()
     }
+
+    /** Drop the literal empty-token artifact ("<>") some templates/models emit. */
+    private fun scrub(text: String): String {
+        var t = text.trimStart()
+        while (true) {
+            if (t.startsWith(NULL_TOKEN)) { t = t.removePrefix(NULL_TOKEN).trimStart(); continue }
+            if (t.startsWith(NULL_WORD, ignoreCase = true) &&
+                (t.length == NULL_WORD.length || t[NULL_WORD.length].isWhitespace())
+            ) { t = t.substring(NULL_WORD.length).trimStart(); continue }
+            break
+        }
+        return t
+    }
+
+    /** What the UI should display for raw model output, honouring thinking mode. */
+    private fun display(raw: String): String = if (_state.value.thinking) raw else scrub(stripThinking(raw))
 
     fun send(input: String, mediaPath: String? = null) {
         val chat = current() ?: return
@@ -263,11 +337,11 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
                     runCatching {
                         if (mediaPath != null) {
                             LlamaBridge.generateWithMedia(prompt, mediaPath, MAX_TOKENS, preset.temperature, preset.topP) { t ->
-                                sb.append(t); _state.update { it.copy(streaming = sb.toString()) }
+                                sb.append(t); _state.update { it.copy(streaming = display(sb.toString())) }
                             }
                         } else {
                             LlamaBridge.generate(prompt, MAX_TOKENS, preset.temperature, preset.topP) { t ->
-                                sb.append(t); _state.update { it.copy(streaming = sb.toString()) }
+                                sb.append(t); _state.update { it.copy(streaming = display(sb.toString())) }
                             }
                         }
                     }
@@ -275,8 +349,8 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             }
 
             val elapsed = (System.currentTimeMillis() - started).coerceAtLeast(1)
-            val finalText = if (s2.thinking) sb.toString() else stripThinking(sb.toString())
-            val speed = if (finalText.length > 0) " · %.1fs".format(elapsed / 1000.0) else ""
+            val finalText = if (s2.thinking) sb.toString().trim() else scrub(stripThinking(sb.toString()))
+            val speed = if (finalText.isNotEmpty()) " · %.1fs".format(elapsed / 1000.0) else ""
 
             withContext(Dispatchers.Main) {
                 val c = current()
@@ -296,13 +370,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     private fun runCloud(chat: Chat, s: UiState, sb: StringBuilder) {
         val pid = s.currentModelId?.removePrefix("cloud:")?.substringBefore("::") ?: return
         val model = s.currentModelId?.substringAfter("::") ?: return
-        val provider = CloudProviders.byId(pid) ?: return
+        val provider = ProviderStore.resolve(getApplication(), pid) ?: return
         val key = ProviderStore.keysFor(getApplication(), pid).firstOrNull()?.apiKey ?: ""
         if (key.isBlank()) {
             sb.append("[no API key for ${provider.name}]")
             return
         }
-        val msgs = chat.messages.dropLast(0).map { it.role to it.content }
+        val msgs = chat.messages.map { it.role to it.content }
         runCatching {
             CloudEngine.chat(provider, key, model, msgs, 0.7f) { t ->
                 sb.append(t); _state.update { it.copy(streaming = sb.toString()) }
@@ -315,6 +389,17 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         val lastUser = c.messages.lastOrNull { it.role == "user" } ?: return
         c.messages.removeAll { it.role == "assistant" && c.messages.indexOf(it) > c.messages.indexOf(lastUser) }
         send(lastUser.content)
+    }
+
+    /** Re-run generation for the assistant message at [index] (drop it + its prompt first). */
+    fun retryAt(index: Int) {
+        val c = current() ?: return
+        if (index !in c.messages.indices) return
+        val userIdx = (index downTo 0).firstOrNull { c.messages[it].role == "user" } ?: return
+        val userText = c.messages[userIdx].content
+        c.messages.subList(userIdx, c.messages.size).clear()
+        save(); push()
+        send(userText)
     }
 
     fun editAndResend(index: Int, newText: String) {
@@ -331,30 +416,30 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
 
     // --- toggles ------------------------------------------------------------
 
-    fun setThinking(on: Boolean) { prefs.edit().putBoolean(KEY_THINKING, on).apply(); _state.update { it.copy(thinking = on) } }
+    fun setThinking(on: Boolean) {
+        prefs.edit().putBoolean(KEY_THINKING, on).putBoolean(KEY_THINKING_MANUAL, true).apply()
+        _state.update { it.copy(thinking = on) }
+    }
     fun setWebSearch(on: Boolean) { prefs.edit().putBoolean(KEY_WEB, on).apply(); _state.update { it.copy(webSearch = on) } }
     fun setAttachment(path: String, isAudio: Boolean = false) = _state.update { it.copy(attachment = path, attachmentIsAudio = isAudio) }
     fun clearAttachment() = _state.update { it.copy(attachment = null, attachmentIsAudio = false) }
     fun setServer(running: Boolean, port: Int = _state.value.serverPort) = _state.update { it.copy(serverRunning = running, serverPort = port) }
     fun bumpProviderSelection() = _state.update { it.copy(providerSelectionVersion = it.providerSelectionVersion + 1) }
 
+    /** Manual GPU layer count (also switches AUTO off). */
     fun setGpuLayers(layers: Int) {
         val v = layers.coerceIn(0, 200)
-        prefs.edit().putInt(KEY_GPU_LAYERS, v).apply()
-        _state.update { it.copy(gpuLayers = v) }
+        prefs.edit().putInt(KEY_GPU_LAYERS, v).putBoolean(KEY_GPU_AUTO, false).apply()
+        _state.update { it.copy(gpuLayers = v, gpuAuto = false) }
+    }
+
+    /** AUTO = offload all layers when a GPU backend is present, else CPU. */
+    fun setGpuAuto(on: Boolean) {
+        prefs.edit().putBoolean(KEY_GPU_AUTO, on).apply()
+        _state.update { it.copy(gpuAuto = on) }
     }
 
     fun stop() = LlamaBridge.cancel()
-
-    /** Headless repro hook (debug): auto-load a model with a given ngl for log capture. */
-    fun debugLoad(path: String, ngl: Int, ctx: Int) {
-        viewModelScope.launch(Dispatchers.IO) {
-            runCatching { LlamaBridge.init() }
-            Log.i(TAG, "debugLoad path=$path ngl=$ngl ctx=$ctx")
-            val rc = runCatching { LlamaBridge.loadModel(path, ctx, 4, ngl) }.getOrDefault(-99)
-            Log.i(TAG, "debugLoad rc=$rc")
-        }
-    }
 
     override fun onCleared() {
         runCatching { LlamaBridge.free() }
@@ -366,12 +451,19 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private const val SYSTEM_PROMPT = "You are a helpful assistant running locally on the user's phone."
         private const val MAX_TOKENS = 512
         const val GPU_LAYERS_ALL = 99
+        private const val THINK_OPEN = "\u003Cthink\u003E"
+        private const val THINK_CLOSE = "\u003C/think\u003E"
+        private const val NULL_TOKEN = "\u003C\u003E"
         private const val KEY_GPU_LAYERS = "gpu_layers"
+        private const val KEY_GPU_AUTO = "gpu_auto"
         private const val KEY_GPU_ATTEMPT = "gpu_attempt_inflight"
         private const val KEY_LAST_MODEL = "last_model_path"
         private const val KEY_CURRENT = "current_chat"
         private const val KEY_THINKING = "thinking"
+        private const val KEY_THINKING_MANUAL = "thinking_manual"
         private const val KEY_WEB = "web_search"
+        private const val KEY_PROJ_OVERRIDE = "projector_overrides"
+        private const val NULL_WORD = "null"
         private const val ROOTS = "model_roots"
     }
 }

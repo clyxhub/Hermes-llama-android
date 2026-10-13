@@ -40,6 +40,8 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
 | 2026-10-13 | Thinking OFF ⇒ append `/no_think` to the final user turn AND strip any emitted reasoning trace from the reply | user: "model is thinking anyways regardless if thinking mode is on or off" |
 | 2026-10-13 | HuggingFace search state is hoisted OUT of the composable so it survives navigating away | user: "searches doesn't erase" (search content was being cleared) |
 | 2026-10-13 | Multi-chat persistence moved to `ChatStore` (prefs key `chats_v2`) replacing the single-history blob | proper chat history (pin/rename/delete/share) |
+| 2026-10-13 | **Live-server model list fixed**: `LocalServer` now holds a multi-model `catalogue` (`data class ModelCard`); it is built from `ModelRepository.all()` (local GGUFs + selected cloud models) and published by `ChatViewModel.refreshModels()` and rebuilt by `ServerService` on start. `GET /v1/models` returns the whole catalogue plus the loaded snapshot (deduped) instead of at most one entry. | user: "the live server is not loading any available models be it local or cloud" |
+| 2026-10-13 | `ModelRepository.rootsFrom(context)` added so non-UI callers (the foreground `ServerService`) resolve the scan roots exactly like the ViewModel | keep the server catalogue and the model library roots identical |
 
 ---
 
@@ -57,6 +59,7 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
 | h Model sources A/B/C | DONE | this flow | A local import (SAF); B `HuggingFaceClient.kt` (search / file list / resumable download); C `CloudEngine.kt` + `CloudProviders` (12 BYOK providers) |
 | quick wins (off-plan) | DONE | a9a4fba, ef550f6 | auto-load model, tok/s, chat history, clear button |
 | v5 UI/UX overhaul (PocketAI-parity) | IN PROGRESS | (uncommitted) | multi-section drawer; new data layer `ChatStore`/`ModelRepository`/`ProviderStore`/`VoiceIO`/`WebSearch`; rewritten `ChatViewModel`+`MainActivity`; pending: `ChatsScreen`/`ModelsScreen`/`HuggingFaceScreen`/`ProvidersScreen`/`SettingsScreen`, GPU-crash fix, single CI build |
+| v5 defect batch #2 (13 fixes, incl. live-server model list) | IN PROGRESS | (uncommitted) | folds defect #13 into the same flow: `LocalServer` gains a multi-model catalogue (local GGUFs + selected cloud models) so `GET /v1/models` is never empty; published from `ChatViewModel.refreshModels()` and rebuilt by `ServerService` on start. ONE Rule-8 build for the whole batch. |
 
 ## DEVIATIONS (work outside plan order)
 - Auto-load last model + tok/s readout (`a9a4fba`) — not a plan stage
@@ -87,11 +90,11 @@ projector auto-pair + a real generation (needs a SAF file pick, UI-driven).
 
 | 38389045212 | a0c15e1 | failure | `:app:compileReleaseKotlin` — 8 errors, all `MainActivity.kt` 198/201/207/317–321: "Type mismatch: inferred type is () -> Unit but MutableInteractionSource was expected". Cause: a trailing content lambda was passed to Material3 `DropdownMenuItem`, which has **no** trailing slot. Fix: use the `text =` / `leadingIcon =` slots. |
 
-**v5 overhaul build #2: IN PROGRESS.** The follow-up (single allowed) build folds in (a) the
-DropdownMenuItem fix and (b) a full PocketPal-parity restyle of `MainActivity.kt` /
-`ModelsScreen.kt` / `SettingsScreen.kt`, keeping every differentiator feature. Per Rule 8 this
-restyle rides the same fix build. (Gap the user flagged 2026-10-13: AGENTS.md was not being kept
-current *during* the rework — Rule 6 violation, corrected here.)
+| 38391843182 | 9df32a6 | success | `:app:compileReleaseKotlin` clean (no errors). APK 72 MB. Unpacked libs: `libggml-vulkan.so` 20.5 MB (`memory budget disabled` marker count **1**), `libmtmd.so` 1.39 MB, `libhermes_llama.so` mtmd occurrences **19**. Installed `pm install -r -d` → Success; `topResumedActivity` = `.MainActivity`; no `FATAL`. App JNI log: `llama backend initialised (gpu_offload_supported=1)` + `system: CPU : NEON = 1 | ARM_FMA = 1 | REPACK = 1`. Live UI dump = PocketPal-style Chat screen: 'Open drawer' desc, 'Chat' title, 'No Models Available', 'Download a model to start chatting with Hermes Llama', 'Download Model', plus our 'Thinking' / 'Web search' toggles. |
+
+**v5 overhaul: DONE.** The single Rule-8 fix+restyle build (38391843182) is green and installed;
+this docs-only tracker update is pushed with `[skip ci]` so it does not consume another build.
+Still needs a GGUF present on-device to exercise a real load + projector auto-pair + MEMBUDGET.
 
 ---
 

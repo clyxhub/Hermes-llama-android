@@ -104,6 +104,12 @@ Java_com_hermes_llama_LlamaBridge_nativeSystemInfo(JNIEnv* env, jobject) {
     return env->NewStringUTF(llama_print_system_info());
 }
 
+/** True when a GPU backend (Vulkan) is registered and can offload layers. */
+JNIEXPORT jboolean JNICALL
+Java_com_hermes_llama_LlamaBridge_nativeSupportsGpu(JNIEnv*, jobject) {
+    return llama_supports_gpu_offload() ? JNI_TRUE : JNI_FALSE;
+}
+
 /**
  * Load a GGUF model. Returns 0 on success, negative on failure.
  *

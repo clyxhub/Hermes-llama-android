@@ -26,6 +26,7 @@ object LlamaBridge {
 
     private external fun nativeInit(): Int
     private external fun nativeSystemInfo(): String
+    private external fun nativeSupportsGpu(): Boolean
     private external fun nativeLoadModel(
         path: String, nCtx: Int, nThreads: Int, nGpuLayers: Int
     ): Int
@@ -61,6 +62,9 @@ object LlamaBridge {
     fun init(): Int = nativeInit()
 
     fun systemInfo(): String = nativeSystemInfo()
+
+    /** True when a GPU backend (Vulkan) is registered for layer offload. */
+    fun supportsGpu(): Boolean = nativeSupportsGpu()
 
     /** @return 0 on success; negative error code otherwise. */
     fun loadModel(path: String, nCtx: Int = 4096, nThreads: Int = 4, nGpuLayers: Int = 0): Int =

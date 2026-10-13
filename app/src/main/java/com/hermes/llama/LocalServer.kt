@@ -1,5 +1,6 @@
 package com.hermes.llama
 
+import android.content.Context
 import android.util.Base64
 import org.json.JSONArray
 import org.json.JSONObject
@@ -39,7 +40,21 @@ object LocalServer {
         val chatTemplate: String?
     )
 
+    /**
+     * One discoverable model in the catalogue: every local GGUF under the scan
+     * roots plus every cloud model ticked in Providers. This is what the server
+     * advertises on GET /v1/models, independent of what is currently loaded.
+     */
+    data class ModelCard(
+        val id: String,
+        val ownedBy: String,
+        val source: String,
+        val providerId: String? = null,
+        val detail: String = ""
+    )
+
     @Volatile private var snapshot: ModelSnapshot? = null
+    @Volatile private var catalogue: List<ModelCard> = emptyList()
     @Volatile private var serverSocket: ServerSocket? = null
     @Volatile private var acceptThread: Thread? = null
     @Volatile var apiKey: String? = null
@@ -53,6 +68,36 @@ object LocalServer {
     }
 
     fun updateModel(model: ModelSnapshot?) { snapshot = model }
+
+    /**
+     * Publish the discoverable catalogue directly (used by the view-model, which
+     * already has the freshly scanned library in hand).
+     */
+    fun updateCatalogue(cards: List<ModelCard>) { catalogue = cards }
+
+    /**
+     * Rebuild the catalogue from the app model library so a running server
+     * always answers /v1/models with every available local GGUF and every cloud
+     * model the user ticked in Providers, not just the currently loaded one.
+     */
+    fun refreshCatalogue(context: Context) {
+        val entries = runCatching {
+            ModelRepository.all(context, ModelRepository.rootsFrom(context))
+        }.getOrDefault(emptyList())
+        catalogue = cardsFrom(entries)
+    }
+
+    /** Map library entries to OpenAI-style model cards. */
+    fun cardsFrom(entries: List<ModelRepository.Entry>): List<ModelCard> = entries.map { e ->
+        ModelCard(
+            id = e.name,
+            ownedBy = if (e.isLocal) "local" else (e.providerName ?: "cloud"),
+            source = e.source,
+            providerId = e.providerId,
+            detail = e.subtitle
+        )
+    }
+
 
     val isRunning: Boolean get() = serverSocket?.isClosed == false
 
@@ -267,9 +312,38 @@ object LocalServer {
 
     private fun modelsResponse(): JSONObject {
         val list = JSONArray()
-        snapshot?.let {
-            list.put(JSONObject().put("id", it.id).put("object", "model").put("owned_by", "local"))
+        val seen = HashSet<String>()
+
+        // Every discoverable model: local GGUFs on disk + selected cloud models.
+        catalogue.forEach { c ->
+            if (seen.add(c.id)) {
+                list.put(
+                    JSONObject()
+                        .put("id", c.id)
+                        .put("object", "model")
+                        .put("owned_by", c.ownedBy)
+                        .put("source", c.source)
+                        .put("provider", c.providerId ?: JSONObject.NULL)
+                        .put("detail", c.detail)
+                )
+            }
         }
+
+        // Always advertise the currently loaded model, even if it is not on disk
+        // (for example a model loaded from a file-picker path outside the roots).
+        snapshot?.let { s ->
+            if (seen.add(s.id)) {
+                list.put(
+                    JSONObject()
+                        .put("id", s.id)
+                        .put("object", "model")
+                        .put("owned_by", "local")
+                        .put("source", "local")
+                        .put("loaded", true)
+                )
+            }
+        }
+
         return JSONObject().put("object", "list").put("data", list)
     }
 

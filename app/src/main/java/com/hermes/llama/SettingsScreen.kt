@@ -41,9 +41,18 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
 
             item { SectionHeader("Model Initialization Settings") }
             item {
+                SwitchRow(
+                    "GPU acceleration (auto)",
+                    if (state.gpuAvailable) "Offload every layer the GPU can hold"
+                    else "No GPU backend detected — running on CPU",
+                    state.gpuAuto
+                ) { vm.setGpuAuto(it) }
+            }
+            item {
                 SettingRow(
                     title = "GPU Layers",
-                    subtitle = if (state.gpuLayers == 0) "0 - CPU only - no hardware accelerators"
+                    subtitle = if (state.gpuAuto) "Auto" + (if (state.gpuAvailable) " (all layers)" else " (CPU only)")
+                    else if (state.gpuLayers == 0) "0 - CPU only"
                     else "${state.gpuLayers} layers offloaded"
                 ) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
@@ -58,11 +67,21 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                 }
             }
             item { SettingRow("Threads", "${state.threads} (auto-tuned)", null) }
-            item { SettingRow("Context Size", state.preset?.contextSize?.toString() ?: "not loaded", null) }
+            item {
+                SettingRow(
+                    "Context Size",
+                    (state.preset?.contextSize?.toString() ?: "not loaded") + " · defaults from the loaded model",
+                    null
+                )
+            }
             item {
                 SettingRow(
                     "Device Selection",
-                    if (state.gpuLayers > 0) "GPU x${state.gpuLayers}" else "CPU only - no hardware accelerators detected",
+                    when {
+                        state.gpuAuto && state.gpuAvailable -> "GPU (auto, all layers)"
+                        state.gpuLayers > 0 -> "GPU x${state.gpuLayers}"
+                        else -> "CPU only - no hardware accelerators detected"
+                    },
                     null
                 )
             }

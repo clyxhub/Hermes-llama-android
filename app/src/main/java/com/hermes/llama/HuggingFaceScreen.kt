@@ -8,6 +8,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
@@ -22,10 +23,10 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 /**
- * v5: HuggingFace is its OWN section (not a sub-tab). Search state lives here,
- * at object scope, so results survive navigating away — this was the
- * "searches doesn't erase" bug (state was previously held in the composable and
- * reset on recomposition/navigation).
+ * v5: HuggingFace is its OWN section (not a sub-tab). Search state lives at
+ * object scope so results survive navigating away. Erasing the query clears the
+ * results (the "searches doesn't erase" bug). The repo view has a real download
+ * section and can pull the mmproj alongside the model in one tap.
  */
 object HfState {
     var query by mutableStateOf("")
@@ -36,6 +37,8 @@ object HfState {
     var openRepo by mutableStateOf<String?>(null)
     var filesLoading by mutableStateOf(false)
     var files by mutableStateOf<List<HuggingFaceClient.RepoFile>>(emptyList())
+    /** Bumped whenever a download completes, to refresh the Download section. */
+    var dlVersion by mutableStateOf(0)
 
     /** file path -> 0..1 progress, while a download is active. */
     val downloads = mutableStateMapOf<String, Float>()
@@ -45,12 +48,41 @@ object HfState {
 private fun hfDir(context: Context, repoId: String): File =
     File(File(context.getExternalFilesDir(null), "models"), repoId.substringAfterLast('/'))
 
+private fun hfRoot(context: Context): File = File(context.getExternalFilesDir(null), "models")
+
+/** Every gguf already downloaded through the HF portal. */
+private fun downloadedFiles(context: Context): List<File> {
+    val root = hfRoot(context)
+    if (!root.isDirectory) return emptyList()
+    val out = mutableListOf<File>()
+    runCatching {
+        root.walkTopDown().maxDepth(4).forEach {
+            if (it.isFile && it.name.endsWith(".gguf", ignoreCase = true)) out.add(it)
+        }
+    }
+    return out.sortedBy { it.name.lowercase() }
+}
+
+private fun isMmproj(name: String): Boolean {
+    val n = name.lowercase()
+    return n.contains("mmproj") || n.contains("projector") || n.contains("clip")
+}
+
+private fun affinity(a: String, b: String): Int {
+    val x = a.lowercase().substringBeforeLast('.')
+    val y = b.lowercase().substringBeforeLast('.')
+    var i = 0
+    while (i < x.length && i < y.length && x[i] == y[i]) i++
+    return i
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun HuggingFaceScreen(vm: ChatViewModel, onMenu: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val repo = HfState.openRepo
+    val dlv = HfState.dlVersion
 
     Scaffold(
         topBar = {
@@ -61,16 +93,23 @@ fun HuggingFaceScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                             if (repo != null) "Back" else "Menu")
                     }
                 },
-                title = { Text(repo ?: "HuggingFace", maxLines = 1) }
+                title = { Text(repo ?: "HuggingFace", maxLines = 1) },
+                actions = {
+                    IconButton(onClick = { HfState.dlVersion++ }) { Icon(Icons.Default.Refresh, "Refresh downloads") }
+                }
             )
         }
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
-
             if (repo == null) {
+                // --- search bar -----------------------------------------------------
                 Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
                     OutlinedTextField(
-                        value = HfState.query, onValueChange = { HfState.query = it },
+                        value = HfState.query,
+                        onValueChange = {
+                            HfState.query = it
+                            if (it.isBlank()) { HfState.results = emptyList(); HfState.error = "" }
+                        },
                         placeholder = { Text("Search GGUF models…") },
                         singleLine = true, modifier = Modifier.weight(1f)
                     )
@@ -99,19 +138,16 @@ fun HuggingFaceScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                     Text(HfState.error, color = MaterialTheme.colorScheme.error,
                         style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
                 }
-            }
 
-            if (repo == null) {
+                // --- results + downloads -------------------------------------------
+                val dl = remember(dlv) { downloadedFiles(context) }
                 LazyColumn(
                     Modifier.weight(1f).fillMaxWidth(),
                     contentPadding = PaddingValues(8.dp),
                     verticalArrangement = Arrangement.spacedBy(6.dp)
                 ) {
-                    if (HfState.results.isEmpty() && !HfState.loading) {
-                        item {
-                            Text("Search results appear here and stay put when you navigate away.",
-                                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
-                        }
+                    if (HfState.results.isNotEmpty()) {
+                        item { Text("Search results", fontWeight = FontWeight.SemiBold) }
                     }
                     items(HfState.results, key = { it.id }) { r ->
                         Card(onClick = {
@@ -131,9 +167,37 @@ fun HuggingFaceScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                             }
                         }
                     }
+
+                    item {
+                        Spacer(Modifier.height(8.dp))
+                        Text("Downloaded files", fontWeight = FontWeight.SemiBold)
+                    }
+                    if (dl.isEmpty()) {
+                        item {
+                            Text("Nothing downloaded yet — search and open a repo to download.",
+                                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
+                        }
+                    }
+                    items(dl, key = { it.absolutePath }) { f ->
+                        Card(Modifier.fillMaxWidth()) {
+                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(f.name, fontWeight = FontWeight.SemiBold, maxLines = 1)
+                                    Text(
+                                        (if (isMmproj(f.name)) "mmproj · " else "") + ModelRepository.formatSize(f.length()),
+                                        style = MaterialTheme.typography.labelSmall)
+                                }
+                                Text("in Models", style = MaterialTheme.typography.labelSmall,
+                                    color = MaterialTheme.colorScheme.primary)
+                            }
+                        }
+                    }
                 }
             } else {
+                // --- repo file view -------------------------------------------------
                 if (HfState.filesLoading) LinearProgressIndicator(modifier = Modifier.fillMaxWidth())
+                val models = HfState.files.filter { !isMmproj(it.path.substringAfterLast('/')) }
+                val projs = HfState.files.filter { isMmproj(it.path.substringAfterLast('/')) }
                 LazyColumn(
                     Modifier.weight(1f).fillMaxWidth(),
                     contentPadding = PaddingValues(8.dp),
@@ -145,46 +209,84 @@ fun HuggingFaceScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                                 style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(8.dp))
                         }
                     }
-                    items(HfState.files, key = { it.path }) { f ->
-                        Card(Modifier.fillMaxWidth()) {
-                            Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(f.path.substringAfterLast('/'), fontWeight = FontWeight.SemiBold)
-                                    Text(ModelRepository.formatSize(f.size),
-                                        style = MaterialTheme.typography.labelSmall)
-                                }
-                                val prog = HfState.downloads[f.path]
-                                if (prog != null) {
-                                    LinearProgressIndicator(
-                                        progress = prog,
-                                        modifier = Modifier.width(96.dp)
-                                    )
-                                } else {
-                                    IconButton(onClick = {
-                                        HfState.downloads[f.path] = 0f
-                                        scope.launch {
-                                            val dir = hfDir(context, repo)
-                                            withContext(Dispatchers.IO) {
-                                                HuggingFaceClient.download(
-                                                    repo, f.path, dir, HfState.token.ifBlank { null }
-                                                ) { done, total ->
-                                                    HfState.downloads[f.path] =
-                                                        if (total > 0) done.toFloat() / total else 0f
-                                                }
-                                            }
-                                            HfState.downloads.remove(f.path)
-                                            vm.refreshModelsNow()
-                                        }
-                                    }) { Icon(Icons.Default.Download, "Download") }
-                                }
-                            }
-                        }
+                    if (models.isNotEmpty()) item { Text("Model files", fontWeight = FontWeight.SemiBold) }
+                    items(models, key = { it.path }) { f ->
+                        val best = projs.maxByOrNull { affinity(f.path.substringAfterLast('/'), it.path.substringAfterLast('/')) }
+                        FileRow(
+                            f = f,
+                            extraLabel = if (best != null) "＋ Download mmproj" else null,
+                            onDownload = {
+                                launchDownload(context, scope, vm, repo, listOf(f.path))
+                            },
+                            onExtra = if (best != null) {
+                                { launchDownload(context, scope, vm, repo, listOf(f.path, best.path)) }
+                            } else null
+                        )
+                    }
+                    if (projs.isNotEmpty()) item { Text("Projector files (mmproj)", fontWeight = FontWeight.SemiBold) }
+                    items(projs, key = { it.path }) { f ->
+                        FileRow(
+                            f = f, extraLabel = null,
+                            onDownload = { launchDownload(context, scope, vm, repo, listOf(f.path)) },
+                            onExtra = null
+                        )
+                    }
+                    item {
+                        Text("Downloads land in " + hfDir(context, repo).absolutePath +
+                            " and appear on the Models page (mmproj pairs automatically).",
+                            style = MaterialTheme.typography.labelSmall, modifier = Modifier.padding(8.dp))
                     }
                 }
-                Text("Downloads land in " + hfDir(context, repo).absolutePath +
-                    " — they show up on the Models page.",
-                    style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(8.dp))
+            }
+        }
+    }
+}
+
+/** Kick off a download, optionally of several files (model + its mmproj). */
+private fun launchDownload(
+    context: Context,
+    scope: kotlinx.coroutines.CoroutineScope,
+    vm: ChatViewModel,
+    repo: String,
+    paths: List<String>
+) {
+    paths.forEach { HfState.downloads[it] = 0f }
+    scope.launch {
+        val dir = hfDir(context, repo)
+        withContext(Dispatchers.IO) {
+            paths.forEach { path ->
+                HuggingFaceClient.download(repo, path, dir, HfState.token.ifBlank { null }) { done, total ->
+                    HfState.downloads[path] = if (total > 0) done.toFloat() / total else 0f
+                }
+                HfState.downloads.remove(path)
+            }
+        }
+        HfState.dlVersion++
+        vm.refreshModelsNow()
+    }
+}
+
+@Composable
+private fun FileRow(
+    f: HuggingFaceClient.RepoFile,
+    extraLabel: String?,
+    onDownload: () -> Unit,
+    onExtra: (() -> Unit)?
+) {
+    Card(Modifier.fillMaxWidth()) {
+        Row(Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text(f.path.substringAfterLast('/'), fontWeight = FontWeight.SemiBold, maxLines = 1)
+                Text(ModelRepository.formatSize(f.size), style = MaterialTheme.typography.labelSmall)
+            }
+            val prog = HfState.downloads[f.path]
+            if (prog != null) {
+                LinearProgressIndicator(progress = prog, modifier = Modifier.width(72.dp))
+            } else {
+                if (onExtra != null && extraLabel != null) {
+                    TextButton(onClick = onExtra) { Text(extraLabel, style = MaterialTheme.typography.labelSmall) }
+                }
+                IconButton(onClick = onDownload) { Icon(Icons.Default.Download, "Download") }
             }
         }
     }

@@ -21,7 +21,9 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -118,14 +120,19 @@ fun AppRoot(vm: ChatViewModel = viewModel()) {
 fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onOpenModels: () -> Unit) {
     val state by vm.state.collectAsState()
     val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     var input by remember { mutableStateOf("") }
     var editIndex by remember { mutableStateOf<Int?>(null) }
     var editText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
     val msgs = state.current?.messages ?: emptyList()
+    val caps = state.capabilities
 
     val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
-        if (uri != null) copyUriToTemp(context, uri)?.let { vm.setAttachment(it, false) }
+        if (uri != null) copyUriToTemp(context, uri, isAudio = false)?.let { vm.setAttachment(it, false) }
+    }
+    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) copyUriToTemp(context, uri, isAudio = true)?.let { vm.setAttachment(it, true) }
     }
     val voiceInput = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
         VoiceIO.parseStt(res.data)?.let { input = it }
@@ -161,18 +168,7 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onOpenModels: () -> Unit) 
                 },
                 title = { Text("Chat") },
                 actions = {
-                    IconButton(onClick = { vm.setThinking(!state.thinking) }) {
-                        Icon(
-                            Icons.Default.Psychology, "Thinking",
-                            tint = if (state.thinking) MaterialTheme.colorScheme.primary else LocalContentColor.current
-                        )
-                    }
-                    IconButton(onClick = { vm.setWebSearch(!state.webSearch) }) {
-                        Icon(
-                            Icons.Default.Public, "Web search",
-                            tint = if (state.webSearch) MaterialTheme.colorScheme.primary else LocalContentColor.current
-                        )
-                    }
+                    IconButton(onClick = { vm.newChat() }) { Icon(Icons.Default.Add, "New chat") }
                     if (state.busy) {
                         IconButton(onClick = { vm.stop() }) { Icon(Icons.Default.Stop, "Stop") }
                     }
@@ -185,14 +181,18 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onOpenModels: () -> Unit) 
                     value = input,
                     onChange = { input = it },
                     attachment = state.attachment,
+                    attachmentIsAudio = state.attachmentIsAudio,
+                    showImageAttach = caps.vision,
+                    showAudioAttach = caps.audio,
                     busy = state.busy,
+                    thinking = state.thinking,
+                    webSearch = state.webSearch,
+                    onToggleThinking = { vm.setThinking(!state.thinking) },
+                    onToggleWebSearch = { vm.setWebSearch(!state.webSearch) },
                     onAttachImage = { imagePicker.launch("image/*") },
+                    onAttachAudio = { audioPicker.launch("audio/*") },
                     onClearAttachment = { vm.clearAttachment() },
                     onVoice = { voiceInput.launch(VoiceIO.sttIntent()) },
-                    onTts = {
-                        val last = msgs.lastOrNull { it.role == "assistant" }?.content
-                        if (last != null) { VoiceIO.init(context); VoiceIO.speak(last) }
-                    },
                     onSend = {
                         val text = input.trim()
                         if (text.isNotEmpty() || state.attachment != null) {
@@ -217,7 +217,14 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onOpenModels: () -> Unit) 
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     itemsIndexed(msgs) { i, m ->
-                        MessageBubble(m) { editIndex = i; editText = m.content }
+                        MessageBubble(
+                            m = m,
+                            onEdit = { editIndex = i; editText = m.content },
+                            onRetry = { vm.retryAt(i) },
+                            onDelete = { vm.deleteMessage(i) },
+                            onCopy = { clipboard.setText(AnnotatedString(m.content)) },
+                            onSpeak = { VoiceIO.init(context); VoiceIO.speak(m.content) }
+                        )
                     }
                     if (state.busy) item { TypingBubble(state.streaming) }
                 }
@@ -247,21 +254,60 @@ private fun EmptyModels(onOpenModels: () -> Unit) {
 }
 
 @Composable
-private fun MessageBubble(m: Msg, onEdit: () -> Unit) {
+private fun MessageBubble(
+    m: Msg,
+    onEdit: () -> Unit,
+    onRetry: () -> Unit,
+    onDelete: () -> Unit,
+    onCopy: () -> Unit,
+    onSpeak: () -> Unit
+) {
     val isUser = m.role == "user"
-    Column(
+    var menu by remember { mutableStateOf(false) }
+    Row(
         Modifier.fillMaxWidth(),
-        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
+        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+        verticalAlignment = Alignment.CenterVertically
     ) {
         Surface(
             color = if (isUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
             shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.widthIn(max = 320.dp)
+            modifier = Modifier.widthIn(max = 300.dp)
         ) {
             Text(m.content, modifier = Modifier.padding(10.dp), style = MaterialTheme.typography.bodyMedium)
         }
-        if (isUser) {
-            TextButton(onClick = onEdit) { Text("Edit", style = MaterialTheme.typography.labelSmall) }
+        Box {
+            IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Message actions") }
+            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                DropdownMenuItem(
+                    text = { Text("Copy") },
+                    leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                    onClick = { menu = false; onCopy() }
+                )
+                if (isUser) {
+                    DropdownMenuItem(
+                        text = { Text("Edit & resend") },
+                        leadingIcon = { Icon(Icons.Default.Edit, null) },
+                        onClick = { menu = false; onEdit() }
+                    )
+                } else {
+                    DropdownMenuItem(
+                        text = { Text("Retry") },
+                        leadingIcon = { Icon(Icons.Default.Refresh, null) },
+                        onClick = { menu = false; onRetry() }
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Text("Read aloud") },
+                    leadingIcon = { Icon(Icons.Default.VolumeUp, null) },
+                    onClick = { menu = false; onSpeak() }
+                )
+                DropdownMenuItem(
+                    text = { Text("Delete") },
+                    leadingIcon = { Icon(Icons.Default.Delete, null) },
+                    onClick = { menu = false; onDelete() }
+                )
+            }
         }
     }
 }
@@ -272,7 +318,7 @@ private fun TypingBubble(streaming: String) {
         Surface(
             color = MaterialTheme.colorScheme.surfaceVariant,
             shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.widthIn(max = 320.dp)
+            modifier = Modifier.widthIn(max = 300.dp)
         ) {
             Text(
                 if (streaming.isBlank()) "…" else streaming,
@@ -287,20 +333,33 @@ private fun Composer(
     value: String,
     onChange: (String) -> Unit,
     attachment: String?,
+    attachmentIsAudio: Boolean,
+    showImageAttach: Boolean,
+    showAudioAttach: Boolean,
     busy: Boolean,
+    thinking: Boolean,
+    webSearch: Boolean,
+    onToggleThinking: () -> Unit,
+    onToggleWebSearch: () -> Unit,
     onAttachImage: () -> Unit,
+    onAttachAudio: () -> Unit,
     onClearAttachment: () -> Unit,
     onVoice: () -> Unit,
-    onTts: () -> Unit,
     onSend: () -> Unit
 ) {
     Surface(tonalElevation = 3.dp) {
         Column(Modifier.fillMaxWidth().padding(8.dp)) {
             if (attachment != null) {
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.Default.Image, null, modifier = Modifier.size(16.dp))
+                    Icon(
+                        if (attachmentIsAudio) Icons.Default.MusicNote else Icons.Default.Image,
+                        null, modifier = Modifier.size(16.dp)
+                    )
                     Spacer(Modifier.width(6.dp))
-                    Text("Image attached", style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
+                    Text(
+                        if (attachmentIsAudio) "Audio attached" else "Image attached",
+                        style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f)
+                    )
                     IconButton(onClick = onClearAttachment) { Icon(Icons.Default.Close, "Remove attachment") }
                 }
             }
@@ -311,14 +370,31 @@ private fun Composer(
                 modifier = Modifier.fillMaxWidth(),
                 maxLines = 5
             )
+            // Thinking + web search sit beside the input, not in the top bar.
             Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                IconButton(onClick = onAttachImage) { Icon(Icons.Default.Image, "Add image") }
+                ToolToggle("Thinking", Icons.Default.Psychology, thinking, onToggleThinking)
+                ToolToggle("Search", Icons.Default.Public, webSearch, onToggleWebSearch)
+                if (showImageAttach) {
+                    IconButton(onClick = onAttachImage) { Icon(Icons.Default.Image, "Attach image") }
+                }
+                if (showAudioAttach) {
+                    IconButton(onClick = onAttachAudio) { Icon(Icons.Default.MusicNote, "Attach audio") }
+                }
                 IconButton(onClick = onVoice) { Icon(Icons.Default.Mic, "Voice input") }
-                IconButton(onClick = onTts) { Icon(Icons.Default.VolumeUp, "TTS settings") }
                 Spacer(Modifier.weight(1f))
                 FilledIconButton(onClick = onSend, enabled = !busy) { Icon(Icons.Default.Send, "Send") }
             }
         }
+    }
+}
+
+@Composable
+private fun ToolToggle(label: String, icon: ImageVector, active: Boolean, onClick: () -> Unit) {
+    IconButton(onClick = onClick) {
+        Icon(
+            icon, label,
+            tint = if (active) MaterialTheme.colorScheme.primary else LocalContentColor.current
+        )
     }
 }
 
@@ -347,12 +423,13 @@ private fun InfoScreen(onMenu: () -> Unit) {
             Spacer(Modifier.height(8.dp))
             Text("Beyond PocketPal", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
             listOf(
-                "HuggingFace in-app download portal",
-                "BYOK cloud providers, unlimited keys",
+                "HuggingFace in-app download portal (model + mmproj)",
+                "BYOK cloud providers, unlimited keys + custom endpoints",
                 "Embedded OpenAI-compatible server",
-                "mmproj library with auto-pairing",
+                "mmproj library with auto-pairing + explicit pairing",
                 "Built-in web search grounding",
-                "Multi-chat history with pin/rename/share"
+                "Multi-chat history with pin/rename/share",
+                "Per-message copy/edit/retry/delete/read-aloud"
             ).forEach { Text("- $it", style = MaterialTheme.typography.bodyMedium) }
         }
     }
@@ -371,8 +448,9 @@ fun shareText(context: Context, text: String, title: String) {
 }
 
 /** Copy a picked content Uri into a cache file the native mtmd path can read. */
-private fun copyUriToTemp(context: Context, uri: Uri): String? = runCatching {
-    val f = File(context.cacheDir, "attach_${System.currentTimeMillis()}.jpg")
+private fun copyUriToTemp(context: Context, uri: Uri, isAudio: Boolean = false): String? = runCatching {
+    val ext = if (isAudio) "wav" else "jpg"
+    val f = File(context.cacheDir, "attach_${System.currentTimeMillis()}.$ext")
     context.contentResolver.openInputStream(uri)!!.use { input ->
         f.outputStream().use { output -> input.copyTo(output) }
     }

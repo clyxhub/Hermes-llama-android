@@ -13,13 +13,17 @@ import java.net.URL
  * updated without an app change. Cloud models implement the *same* chat
  * interface shape as the local engine, so streaming/thinking/the server all
  * work uniformly.
+ *
+ * `custom = true` marks a user-added provider (see ProviderStore); it behaves
+ * identically here, the flag only drives UI affordances.
  */
 object CloudProviders {
     data class Provider(
         val id: String,
         val name: String,
         val baseUrl: String,
-        val authPrefix: String = "Bearer "
+        val authPrefix: String = "Bearer ",
+        val custom: Boolean = false
     )
 
     val ALL: List<Provider> = listOf(
@@ -43,9 +47,14 @@ object CloudProviders {
 /** OpenAI-compatible chat client used for every BYOK provider. */
 object CloudEngine {
 
+    private const val CONNECT_MS = 15_000
+    private const val READ_MS = 120_000
+    private const val MODELS_READ_MS = 20_000
+
     /** Fetch the provider's model list (OpenAI `/models` shape). */
     fun models(provider: CloudProviders.Provider, apiKey: String): List<String> = runCatching {
         val conn = open("${provider.baseUrl}/models", apiKey, provider.authPrefix, "GET")
+        conn.readTimeout = MODELS_READ_MS
         val body = conn.inputStream.bufferedReader().use { it.readText() }
         val data = JSONObject(body).optJSONArray("data") ?: JSONArray()
         (0 until data.length()).map { data.getJSONObject(it).optString("id") }
@@ -99,8 +108,8 @@ object CloudEngine {
     private fun open(url: String, apiKey: String, authPrefix: String, method: String): HttpURLConnection =
         (URL(url).openConnection() as HttpURLConnection).apply {
             requestMethod = method
-            connectTimeout = 15_000
-            readTimeout = 120_000
+            connectTimeout = CONNECT_MS
+            readTimeout = READ_MS
             setRequestProperty("Authorization", "$authPrefix$apiKey")
             setRequestProperty("Accept", "text/event-stream")
         }

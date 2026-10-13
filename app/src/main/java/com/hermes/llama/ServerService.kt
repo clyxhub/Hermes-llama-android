@@ -42,6 +42,12 @@ class ServerService : Service() {
 
                 val auth = LocalServer.apiKey != null
                 startForeground(NOTIF_ID, buildNotification(port, auth))
+                // Populate the discoverable catalogue (local GGUFs + selected cloud
+                // models) so /v1/models answers with everything, not just the loaded model.
+                Thread(
+                    { runCatching { LocalServer.refreshCatalogue(applicationContext) } },
+                    "hermes-catalogue"
+                ).apply { isDaemon = true }.start()
                 val ok = LocalServer.start(port)
                 ServerState.set(ok, if (ok) port else 0)
             }

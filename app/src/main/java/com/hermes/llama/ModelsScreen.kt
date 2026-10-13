@@ -93,9 +93,11 @@ fun ModelsScreen(vm: ChatViewModel, onMenu: () -> Unit, onFindMore: () -> Unit) 
                             m = m,
                             selected = m.id == state.currentModelId,
                             expanded = expandedId == m.id,
+                            projectors = state.projectorChoices,
                             onUse = { vm.loadEntry(m) },
                             onToggleDetails = { expandedId = if (expandedId == m.id) null else m.id },
-                            onRemove = { pendingDelete = m }
+                            onRemove = { pendingDelete = m },
+                            onPair = { proj -> m.path?.let { vm.setProjector(it, proj) } }
                         )
                     }
                 }
@@ -109,10 +111,13 @@ private fun ModelRow(
     m: ModelRepository.Entry,
     selected: Boolean,
     expanded: Boolean,
+    projectors: List<ModelRepository.Entry>,
     onUse: () -> Unit,
     onToggleDetails: () -> Unit,
-    onRemove: () -> Unit
+    onRemove: () -> Unit,
+    onPair: (String?) -> Unit
 ) {
+    var projMenu by remember { mutableStateOf(false) }
     Card(
         Modifier.fillMaxWidth(),
         colors = if (selected)
@@ -151,7 +156,34 @@ private fun ModelRow(
                 Spacer(Modifier.height(4.dp))
                 Text("source: ${m.source}", style = MaterialTheme.typography.labelSmall)
                 m.path?.let { Text("path: $it", style = MaterialTheme.typography.labelSmall) }
-                Text("projector: ${m.projector ?: "none"}", style = MaterialTheme.typography.labelSmall)
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "projector: " + (m.projector?.substringAfterLast('/') ?: "none"),
+                        style = MaterialTheme.typography.labelSmall,
+                        modifier = Modifier.weight(1f)
+                    )
+                    if (m.isLocal) {
+                        Box {
+                            TextButton(onClick = { projMenu = true }) { Text("Pair mmproj") }
+                            DropdownMenu(expanded = projMenu, onDismissRequest = { projMenu = false }) {
+                                DropdownMenuItem(
+                                    text = { Text("Auto (same folder)") },
+                                    onClick = { projMenu = false; onPair(null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("None (text only)") },
+                                    onClick = { projMenu = false; onPair("") }
+                                )
+                                projectors.forEach { pe ->
+                                    DropdownMenuItem(
+                                        text = { Text(pe.name, maxLines = 1, overflow = TextOverflow.Ellipsis) },
+                                        onClick = { projMenu = false; pe.path?.let(onPair) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
                 m.providerName?.let { Text("provider: $it", style = MaterialTheme.typography.labelSmall) }
             }
         }
