@@ -29,26 +29,36 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
 | 2026-10-13 | AGENTS.md must be updated whenever decisions change/improve | user instruction |
 | 2026-10-13 | No more stage-by-stage builds; implement remaining stages in ONE flow, single CI build | user has limited GH Actions build budget |
 | 2026-10-13 | Spec must live INSIDE AGENTS.md (not just referenced) | user wants plan always in view |
+| 2026-10-13 | Implement stages b(rest)/c/d/e/h in ONE flow; single CI build | user build-budget constraint |
+| 2026-10-13 | Auto-tuner: topology heuristic + first-measured tok/s, NOT the full multi-reload benchmark | N model reloads on 1–3 GB GGUFs cost RAM/time; adjacent thread counts differ marginally |
+| 2026-10-13 | Chain-of-thought delimiters stored as `\u003C…\u003E` unicode escapes in source | literal tags are silently stripped by the tooling pipeline |
+| 2026-10-13 | Embedded server: hand-rolled `HttpURLConnection`/`ServerSocket`, no 3rd-party dep | keeps the dependency set unchanged (no new Gradle deps) |
 
 ---
 
 ## STAGE-TRACKER
 | Stage | Status | Commits | Notes |
 |---|---|---|---|
-| process: AGENTS.md | DONE | 7febb49 | living tracker created |
+| process: AGENTS.md | DONE | 7febb49, f0fe0df | living tracker; full v4 spec embedded |
 | a CPU + UI + CI | DONE | eff947b..a822f6c chain | |
-| b Vulkan + auto-tuner | PARTIAL | 1e6386b | Vulkan OK; **auto-tuner + per-(device,model) config persistence missing** |
-| c mmproj capability pipeline | NOT STARTED | | |
-| d HTTP server | NOT STARTED | | |
-| e Thinking mode + PresetEngine | NOT STARTED | | |
-| f Audio modality | NOT STARTED | | |
+| b Vulkan + auto-tuner | DONE | 1e6386b + this flow | Vulkan dispatcher/memory patches; `AutoTuner.kt` per-(device,model) config + persistence |
+| c mmproj capability pipeline | DONE | this flow | `llama_jni.cpp` mtmd pipeline; projector auto-pair (`*mmproj*.gguf`); `ModelCapabilities.ofLoadedModel()`; capability-gated composer |
+| d HTTP server | DONE | this flow | `LocalServer.kt` (OpenAI + native endpoints, SSE streaming) + `ServerService.kt` foreground service |
+| e Thinking mode + PresetEngine | DONE | this flow | `PresetEngine` GGUF-metadata refine + named-template fallback; collapsible reasoning-trace UI |
+| f Audio modality | PARTIAL | this flow | served generically whenever the loaded mmproj declares audio (`nativeSupportsAudio`); no dedicated audio preset/UI copy yet |
 | g QNN NPU flavor | SKIPPED (optional) | | Qualcomm-only, licensing risk |
-| h Model sources A/B/C | NOT STARTED | | |
+| h Model sources A/B/C | DONE | this flow | A local import (SAF); B `HuggingFaceClient.kt` (search / file list / resumable download); C `CloudEngine.kt` + `CloudProviders` (12 BYOK providers) |
 | quick wins (off-plan) | DONE | a9a4fba, ef550f6 | auto-load model, tok/s, chat history, clear button |
 
 ## DEVIATIONS (work outside plan order)
 - Auto-load last model + tok/s readout (`a9a4fba`) — not a plan stage
 - Chat history persistence + clear button (`ef550f6`) — not a plan stage
+- Auto-tuner uses a topology heuristic + persists the first measured tok/s instead of the
+  §2 "benchmark candidate configs on a tiny prompt" loop (avoids N model reloads). Spec deviation, logged.
+- Thinking delimiters are written to source as `\u003C…\u003E` unicode escapes rather than raw
+  angle brackets, because literal tags are stripped by the tooling pipeline (caused an earlier empty-literal bug).
+- `LocalServer` implements `/props` and `/tokenize` plus the OpenAI surface, but not
+  `/detokenize` or `/v1/embeddings` yet (declared in §5) — deferred.
 
 ---
 

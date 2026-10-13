@@ -28,4 +28,25 @@ data class ModelCapabilities(
         if (embeddings) add("embeddings")
         if (tools) add("tools")
     }.joinToString(", ").ifEmpty { "none" }
+
+    companion object {
+        /**
+         * Stage (c): build the capability set from the *loaded* projector rather
+         * than from the file name. Must be called after the model (and, when
+         * present, the mmproj projector) have been loaded.
+         */
+        fun ofLoadedModel(reasoning: Boolean = false): ModelCapabilities = runCatching {
+            val vision = LlamaBridge.supportsVision()
+            val audio = LlamaBridge.supportsAudio()
+            ModelCapabilities(
+                text = true,
+                vision = vision,
+                audio = audio,
+                video = vision,          // video = frame sampling over the vision path
+                reasoning = reasoning,
+                embeddings = true,       // local llama.cpp can always serve embeddings
+                tools = false            // tool calling is not implemented yet
+            )
+        }.getOrDefault(ModelCapabilities(reasoning = reasoning))
+    }
 }

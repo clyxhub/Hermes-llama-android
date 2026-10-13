@@ -5,9 +5,7 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 # ---------------------------------------------------------------------------
-# llama.cpp is expected as a git submodule at <repo>/third_party/llama.cpp
-# Stage (a) shipped the CPU backend only. Stage (b) (this change) enables the
-# Vulkan GPU backend for Adreno/arm64 devices.
+# llama.cpp is vendored as a git submodule at <repo>/third_party/llama.cpp.
 #
 # The Android NDK ships a stub libvulkan.so *loader* for linking, but no
 # Vulkan headers and no SPIR-V headers. Both are vendored in-tree under
@@ -32,27 +30,83 @@ set(SPIRV-Headers_DIR "${HERMES_VULKAN_DEVKIT}/cmake" CACHE PATH "" FORCE)
 list(APPEND CMAKE_PREFIX_PATH "${HERMES_VULKAN_DEVKIT}")
 
 # ---------------------------------------------------------------------------
-# Hermes downstream patch for the vendored llama.cpp submodule.
+# Hermes downstream patches for the vendored llama.cpp submodule.
 #
-# ggml/src/ggml-vulkan/ggml-vulkan.cpp only ever calls
+# IMPORTANT (regression guard): never hand-write `\n` escape sequences inside
+# the patch strings. A single missing backslash silently turns the inserted
+# C++ into one long line, commenting out the guard that follows it - which is
+# exactly how an earlier revision shipped a patch that never compiled in.
+# Instead we build every string from ${HERMES_NL} (a real newline) and
+# ${HERMES_ESC_NL} (the two characters backslash + n, for C++ string literals).
+# ---------------------------------------------------------------------------
+string(ASCII 10 HERMES_NL)
+string(ASCII 92 HERMES_BS)
+set(HERMES_ESC_NL "${HERMES_BS}n")
+
+set(HERMES_VK_SRC "${LLAMA_DIR}/ggml/src/ggml-vulkan/ggml-vulkan.cpp")
+
+# --- HERMES-PATCH(vulkan-device-dispatcher) ---------------------------------
+# ggml-vulkan.cpp only ever calls
 #   VULKAN_HPP_DEFAULT_DISPATCHER.init(vk_instance.instance);
 # On Android the loader does not resolve every *device-level* entry point via
 # vkGetInstanceProcAddr() (notably core Vulkan 1.2 device commands such as
-# vkGetBufferDeviceAddress), so those DispatchLoaderDynamic slots stay NULL.
-# The first real call (buffer creation during model load) then jumps to 0x0 ->
-# SIGSEGV. We insert an init(device) immediately after the VkDevice is created.
+# vkGetBufferDeviceAddress), so those DispatchLoaderDynamic slots stay NULL and
+# the first real call jumps to 0x0 -> SIGSEGV.
 #
-# The submodule points at upstream ggml-org/llama.cpp, so the change is applied
-# here (idempotently) instead of being committed into the submodule.
-# ---------------------------------------------------------------------------
-set(HERMES_VK_SRC "${LLAMA_DIR}/ggml/src/ggml-vulkan/ggml-vulkan.cpp")
+# The naive fix, init(device), is WORSE: it resolves *every* slot through
+# vkGetDeviceProcAddr(), which legitimately returns NULL for instance- and
+# physical-device-level commands (vkGetPhysicalDeviceProperties,
+# vkGetPhysicalDeviceMemoryProperties, ...), clobbering slots the loader had
+# already filled. The next call to ggml_backend_vk_get_device_memory() then
+# jumps to 0x0 as well. So: init(device) first, then re-resolve the
+# instance-level commands from vkGetInstanceProcAddr().
 if(EXISTS "${HERMES_VK_SRC}")
     file(READ "${HERMES_VK_SRC}" HERMES_VK_TXT)
     string(FIND "${HERMES_VK_TXT}" "HERMES-PATCH(vulkan-device-dispatcher)" HERMES_VK_HAS_PATCH)
     if(HERMES_VK_HAS_PATCH EQUAL -1)
         set(HERMES_VK_ANCHOR "device->device = device->physical_device.createDevice(device_create_info);")
-        set(HERMES_VK_REPLACEMENT "${HERMES_VK_ANCHOR}\n\n        // HERMES-PATCH(vulkan-device-dispatcher): the Vulkan-Hpp default dispatcher is\n        // initialised for the instance only. On Android the loader does not resolve\n        // every device-level entry point through vkGetInstanceProcAddr() (e.g. core\n        // Vulkan 1.2 device commands such as vkGetBufferDeviceAddress), leaving those\n        // DispatchLoaderDynamic slots NULL and the first call jumps to 0x0.\n        // init(device) fills them in via vkGetDeviceProcAddr().\n        VULKAN_HPP_DEFAULT_DISPATCHER.init(device->device);\n\n        GGML_LOG_INFO(\"HermesLlama-vk: device dispatcher initialised (createBuffer=%d getBufferDeviceAddress=%d waitSemaphores=%d)\\n\",\n                      (int) (VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateBuffer != nullptr),\n                      (int) (VULKAN_HPP_DEFAULT_DISPATCHER.vkGetBufferDeviceAddress != nullptr),\n                      (int) (VULKAN_HPP_DEFAULT_DISPATCHER.vkWaitSemaphores != nullptr));\n        if (device->buffer_device_address && VULKAN_HPP_DEFAULT_DISPATCHER.vkGetBufferDeviceAddress == nullptr) {\n            GGML_LOG_WARN(\"HermesLlama-vk: vkGetBufferDeviceAddress still unresolved - disabling buffer_device_address\\n\");\n            device->buffer_device_address = false;\n        }")
-        string(REPLACE "${HERMES_VK_ANCHOR}" "${HERMES_VK_REPLACEMENT}" HERMES_VK_NEW "${HERMES_VK_TXT}")
+
+        set(P1 "${HERMES_VK_ANCHOR}${HERMES_NL}${HERMES_NL}")
+        string(APPEND P1 "        // HERMES-PATCH(vulkan-device-dispatcher): the Vulkan-Hpp default dispatcher is${HERMES_NL}")
+        string(APPEND P1 "        // initialised for the instance only. On Android the loader does not resolve${HERMES_NL}")
+        string(APPEND P1 "        // every device-level entry point through vkGetInstanceProcAddr() (e.g. core${HERMES_NL}")
+        string(APPEND P1 "        // Vulkan 1.2 device commands such as vkGetBufferDeviceAddress), leaving those${HERMES_NL}")
+        string(APPEND P1 "        // DispatchLoaderDynamic slots NULL and the first call jumps to 0x0.${HERMES_NL}")
+        string(APPEND P1 "        //${HERMES_NL}")
+        string(APPEND P1 "        // init(device) resolves every slot through vkGetDeviceProcAddr(), which returns${HERMES_NL}")
+        string(APPEND P1 "        // NULL for instance/physical-device level commands. Restore those afterwards.${HERMES_NL}")
+        string(APPEND P1 "        VULKAN_HPP_DEFAULT_DISPATCHER.init(device->device);${HERMES_NL}")
+        string(APPEND P1 "        {${HERMES_NL}")
+        string(APPEND P1 "            PFN_vkGetInstanceProcAddr hermes_gipa = VULKAN_HPP_DEFAULT_DISPATCHER.vkGetInstanceProcAddr;${HERMES_NL}")
+        string(APPEND P1 "            VkInstance hermes_inst = (VkInstance) vk_instance.instance;${HERMES_NL}")
+        string(APPEND P1 "            if (hermes_gipa != nullptr) {${HERMES_NL}")
+        string(APPEND P1 "                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceProperties =${HERMES_NL}")
+        string(APPEND P1 "                    (PFN_vkGetPhysicalDeviceProperties) hermes_gipa(hermes_inst, \"vkGetPhysicalDeviceProperties\");${HERMES_NL}")
+        string(APPEND P1 "                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceMemoryProperties =${HERMES_NL}")
+        string(APPEND P1 "                    (PFN_vkGetPhysicalDeviceMemoryProperties) hermes_gipa(hermes_inst, \"vkGetPhysicalDeviceMemoryProperties\");${HERMES_NL}")
+        string(APPEND P1 "                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceMemoryProperties2 =${HERMES_NL}")
+        string(APPEND P1 "                    (PFN_vkGetPhysicalDeviceMemoryProperties2) hermes_gipa(hermes_inst, \"vkGetPhysicalDeviceMemoryProperties2\");${HERMES_NL}")
+        string(APPEND P1 "                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceFeatures2 =${HERMES_NL}")
+        string(APPEND P1 "                    (PFN_vkGetPhysicalDeviceFeatures2) hermes_gipa(hermes_inst, \"vkGetPhysicalDeviceFeatures2\");${HERMES_NL}")
+        string(APPEND P1 "                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceQueueFamilyProperties =${HERMES_NL}")
+        string(APPEND P1 "                    (PFN_vkGetPhysicalDeviceQueueFamilyProperties) hermes_gipa(hermes_inst, \"vkGetPhysicalDeviceQueueFamilyProperties\");${HERMES_NL}")
+        string(APPEND P1 "                VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceFormatProperties =${HERMES_NL}")
+        string(APPEND P1 "                    (PFN_vkGetPhysicalDeviceFormatProperties) hermes_gipa(hermes_inst, \"vkGetPhysicalDeviceFormatProperties\");${HERMES_NL}")
+        string(APPEND P1 "            }${HERMES_NL}")
+        string(APPEND P1 "        }${HERMES_NL}")
+        string(APPEND P1 "${HERMES_NL}")
+        string(APPEND P1 "        GGML_LOG_INFO(\"HermesLlama-vk: dispatcher ready (createBuffer=%d bda=%d memProps=%d memProps2=%d props=%d)${HERMES_ESC_NL}\",${HERMES_NL}")
+        string(APPEND P1 "                      (int) (VULKAN_HPP_DEFAULT_DISPATCHER.vkCreateBuffer != nullptr),${HERMES_NL}")
+        string(APPEND P1 "                      (int) (VULKAN_HPP_DEFAULT_DISPATCHER.vkGetBufferDeviceAddress != nullptr),${HERMES_NL}")
+        string(APPEND P1 "                      (int) (VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceMemoryProperties != nullptr),${HERMES_NL}")
+        string(APPEND P1 "                      (int) (VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceMemoryProperties2 != nullptr),${HERMES_NL}")
+        string(APPEND P1 "                      (int) (VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceProperties != nullptr));${HERMES_NL}")
+        string(APPEND P1 "        if (device->buffer_device_address && VULKAN_HPP_DEFAULT_DISPATCHER.vkGetBufferDeviceAddress == nullptr) {${HERMES_NL}")
+        string(APPEND P1 "            GGML_LOG_WARN(\"HermesLlama-vk: vkGetBufferDeviceAddress unresolved - disabling buffer_device_address${HERMES_ESC_NL}\");${HERMES_NL}")
+        string(APPEND P1 "            device->buffer_device_address = false;${HERMES_NL}")
+        string(APPEND P1 "        }")
+
+        string(REPLACE "${HERMES_VK_ANCHOR}" "${P1}" HERMES_VK_NEW "${HERMES_VK_TXT}")
         if(NOT HERMES_VK_NEW STREQUAL HERMES_VK_TXT)
             file(WRITE "${HERMES_VK_SRC}" "${HERMES_VK_NEW}")
             message(STATUS "hermes: applied ggml-vulkan device-dispatcher patch")
@@ -64,23 +118,31 @@ if(EXISTS "${HERMES_VK_SRC}")
     endif()
 endif()
 
-# ---------------------------------------------------------------------------
-# HERMES-PATCH(vulkan-device-memory)
-#
-# ggml_backend_vk_get_device_memory() calls vkdev.getMemoryProperties2() -
-# a Vulkan 1.1 physical-device command resolved through the default
-# dispatcher. On some Android loaders/drivers that slot is left NULL even
-# after init(device), so the call jumps to 0x0 -> SIGSEGV (pc 0x0) inside
-# ggml_backend_vk_get_device_memory during model load with GPU offload on.
-# Guard it and fall back to the Vulkan 1.0 vkGetPhysicalDeviceMemoryProperties.
-# ---------------------------------------------------------------------------
+# --- HERMES-PATCH(vulkan-device-memory) -------------------------------------
+# ggml_backend_vk_get_device_memory() must never call through a NULL dispatcher
+# slot: on this Adreno driver both the Vulkan 1.1 vkGetPhysicalDeviceMemoryProperties2
+# and occasionally the 1.0 vkGetPhysicalDeviceMemoryProperties slot can be
+# unresolved, and jumping to 0x0 crashed model load (SIGSEGV, pc 0x0).
 if(EXISTS "${HERMES_VK_SRC}")
     file(READ "${HERMES_VK_SRC}" HERMES_VK_TXT2)
     string(FIND "${HERMES_VK_TXT2}" "HERMES-PATCH(vulkan-device-memory)" HERMES_VK2_HAS_PATCH)
     if(HERMES_VK2_HAS_PATCH EQUAL -1)
         set(HERMES_VK2_ANCHOR "vkdev.getMemoryProperties2(&memprops);")
-        set(HERMES_VK2_REPLACEMENT "        // HERMES-PATCH(vulkan-device-memory): getMemoryProperties2 is a Vulkan 1.1\n        // physical-device command; on some Android loaders its dispatcher slot stays\n        // NULL and the call jumps to 0x0. Fall back to the Vulkan 1.0 entry point.\n        if (VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceMemoryProperties2 != nullptr) {\n            vkdev.getMemoryProperties2(&memprops);\n        } else {\n            GGML_LOG_WARN(\"HermesLlama-vk: vkGetPhysicalDeviceMemoryProperties2 unresolved - using 1.0 fallback (memory budget disabled)\\n\");\n            memprops.pNext = nullptr;\n            memprops.memoryProperties = vkdev.getMemoryProperties();\n        }")
-        string(REPLACE "${HERMES_VK2_ANCHOR}" "${HERMES_VK2_REPLACEMENT}" HERMES_VK2_NEW "${HERMES_VK_TXT2}")
+
+        set(P2 "        // HERMES-PATCH(vulkan-device-memory): never call through a NULL slot.${HERMES_NL}")
+        string(APPEND P2 "        if (VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceMemoryProperties2 != nullptr) {${HERMES_NL}")
+        string(APPEND P2 "            vkdev.getMemoryProperties2(&memprops);${HERMES_NL}")
+        string(APPEND P2 "        } else if (VULKAN_HPP_DEFAULT_DISPATCHER.vkGetPhysicalDeviceMemoryProperties != nullptr) {${HERMES_NL}")
+        string(APPEND P2 "            GGML_LOG_WARN(\"HermesLlama-vk: memoryProperties2 unresolved - using 1.0 fallback (memory budget disabled)${HERMES_ESC_NL}\");${HERMES_NL}")
+        string(APPEND P2 "            memprops.pNext = nullptr;${HERMES_NL}")
+        string(APPEND P2 "            memprops.memoryProperties = vkdev.getMemoryProperties();${HERMES_NL}")
+        string(APPEND P2 "        } else {${HERMES_NL}")
+        string(APPEND P2 "            GGML_LOG_WARN(\"HermesLlama-vk: no memory query available - reporting unknown memory${HERMES_ESC_NL}\");${HERMES_NL}")
+        string(APPEND P2 "            memprops.pNext = nullptr;${HERMES_NL}")
+        string(APPEND P2 "            memprops.memoryProperties.memoryHeapCount = 0;${HERMES_NL}")
+        string(APPEND P2 "        }")
+
+        string(REPLACE "${HERMES_VK2_ANCHOR}" "${P2}" HERMES_VK2_NEW "${HERMES_VK_TXT2}")
         if(NOT HERMES_VK2_NEW STREQUAL HERMES_VK_TXT2)
             file(WRITE "${HERMES_VK_SRC}" "${HERMES_VK2_NEW}")
             message(STATUS "hermes: applied ggml-vulkan device-memory patch")
@@ -92,12 +154,19 @@ if(EXISTS "${HERMES_VK_SRC}")
     endif()
 endif()
 
+# ---------------------------------------------------------------------------
+# llama.cpp + ggml (CPU + Vulkan). Stage (c) additionally builds `mtmd`, the
+# multimodal (projector) library: mtmd is what turns an mmproj GGUF into
+# embeddings for whatever modality it was trained for - image, audio, etc.
+# ---------------------------------------------------------------------------
 if(EXISTS ${LLAMA_DIR}/CMakeLists.txt)
     set(LLAMA_BUILD_COMMON ON  CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_TESTS  OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+    set(LLAMA_BUILD_TOOLS  OFF CACHE BOOL "" FORCE)
     set(LLAMA_BUILD_SERVER OFF CACHE BOOL "" FORCE)
-    set(GGML_VULKAN  ON  CACHE BOOL "" FORCE)   # <-- stage (b)
+    set(LLAMA_BUILD_MTMD   ON  CACHE BOOL "" FORCE)   # <- stage (c)
+    set(GGML_VULKAN  ON  CACHE BOOL "" FORCE)         # <- stage (b)
     set(GGML_OPENCL  OFF CACHE BOOL "" FORCE)
     set(BUILD_SHARED_LIBS ON  CACHE BOOL "" FORCE)
     add_subdirectory(${LLAMA_DIR} ${CMAKE_BINARY_DIR}/llama.cpp)
@@ -112,7 +181,8 @@ add_library(hermes_llama SHARED llama_jni.cpp)
 target_include_directories(hermes_llama PRIVATE
     ${LLAMA_DIR}/include
     ${LLAMA_DIR}/common
-    ${LLAMA_DIR}/ggml/include)
+    ${LLAMA_DIR}/ggml/include
+    ${LLAMA_DIR}/tools/mtmd)
 
 # In this llama.cpp revision the common library target is `llama-common`
 # (outputs libllama-common.a); passing `common` makes ld.lld fail with
@@ -129,3 +199,13 @@ target_link_libraries(hermes_llama
     ggml
     android
     log)
+
+# Multimodal projector support (stage c). Compiled in only when the mtmd target
+# exists, so a llama.cpp revision without it still builds (image input hidden).
+if(TARGET mtmd)
+    target_compile_definitions(hermes_llama PRIVATE HERMES_HAS_MTMD=1)
+    target_link_libraries(hermes_llama mtmd)
+    message(STATUS "hermes: mtmd found - multimodal (mmproj) support ENABLED")
+else()
+    message(STATUS "hermes: mtmd NOT found - multimodal support DISABLED")
+endif()

@@ -4,6 +4,10 @@ package com.hermes.llama
  * Thin Kotlin wrapper over the native llama.cpp bridge.
  *
  * Stage (a): load model, stream a generation, cancel, free.
+ * Stage (b): GPU offload (-ngl) + CPU-only device restriction.
+ * Stage (c): mmproj projector load + media (image/audio) generation via mtmd.
+ * Stage (e): GGUF metadata access + template-based prompt formatting.
+ *
  * The native side owns a single global session; this object is the only
  * intended entry point to it.
  */
@@ -13,7 +17,7 @@ object LlamaBridge {
         System.loadLibrary("hermes_llama")
     }
 
-    /** Token callback for [generate]. Called on the generation thread. */
+    /** Token callback for [generate]/[generateWithMedia]. Called on the decoding thread. */
     fun interface TokenCallback {
         fun onToken(token: String)
     }
@@ -31,6 +35,26 @@ object LlamaBridge {
         prompt: String, maxTokens: Int, temperature: Float, topP: Float, callback: TokenCallback
     ): Int
     private external fun nativeFree()
+
+    // stage (e): metadata / templating
+    private external fun nativeModelDesc(): String?
+    private external fun nativeModelMeta(key: String): String?
+    private external fun nativeModelParamCount(): Long
+    private external fun nativeModelSize(): Long
+    private external fun nativeChatTemplate(): String?
+    private external fun nativeApplyChatTemplate(
+        template: String, roles: Array<String>, contents: Array<String>, addAssistant: Boolean
+    ): String?
+    private external fun nativeCountTokens(text: String): Int
+
+    // stage (c): multimodal projector
+    private external fun nativeLoadProjector(path: String, nThreads: Int): Int
+    private external fun nativeSupportsVision(): Boolean
+    private external fun nativeSupportsAudio(): Boolean
+    private external fun nativeGenerateWithMedia(
+        prompt: String, mediaPath: String, maxTokens: Int,
+        temperature: Float, topP: Float, callback: TokenCallback
+    ): Int
 
     // --- public API ----------------------------------------------------------
 
@@ -59,4 +83,47 @@ object LlamaBridge {
         topP: Float = 0.95f,
         onToken: (String) -> Unit
     ): Int = nativeGenerate(prompt, maxTokens, temperature, topP, TokenCallback(onToken))
+
+    // --- metadata / templating ----------------------------------------------
+
+    fun modelDesc(): String? = nativeModelDesc()
+    fun modelMeta(key: String): String? = nativeModelMeta(key)
+    fun modelParamCount(): Long = nativeModelParamCount()
+    fun modelSize(): Long = nativeModelSize()
+    fun chatTemplate(): String? = nativeChatTemplate()
+    fun countTokens(text: String): Int = nativeCountTokens(text)
+
+    /**
+     * Apply [template] (empty = the model's own) to the conversation and return
+     * the formatted prompt, or null when no model/template is available.
+     */
+    fun applyChatTemplate(
+        template: String,
+        roles: List<String>,
+        contents: List<String>,
+        addAssistant: Boolean = true
+    ): String? {
+        if (roles.isEmpty() || roles.size != contents.size) return null
+        return nativeApplyChatTemplate(template, roles.toTypedArray(), contents.toTypedArray(), addAssistant)
+    }
+
+    // --- multimodal (stage c) -----------------------------------------------
+
+    /** @return 0 on success; -99 when the build has no mtmd support. */
+    fun loadProjector(path: String, nThreads: Int = 4): Int = nativeLoadProjector(path, nThreads)
+
+    fun supportsVision(): Boolean = nativeSupportsVision()
+    fun supportsAudio(): Boolean = nativeSupportsAudio()
+
+    /** Generate from a prompt + one media file (image/audio handled by the projector). */
+    fun generateWithMedia(
+        prompt: String,
+        mediaPath: String,
+        maxTokens: Int = 512,
+        temperature: Float = 0.8f,
+        topP: Float = 0.95f,
+        onToken: (String) -> Unit
+    ): Int = nativeGenerateWithMedia(
+        prompt, mediaPath, maxTokens, temperature, topP, TokenCallback(onToken)
+    )
 }
