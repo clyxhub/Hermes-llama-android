@@ -30,6 +30,7 @@ object LlamaBridge {
     private external fun nativeLoadModel(
         path: String, nCtx: Int, nThreads: Int, nGpuLayers: Int
     ): Int
+    private external fun nativeSetKvQuant(mode: Int)
     private external fun nativeGetContextSize(): Int
     private external fun nativeCancel()
     private external fun nativeGenerate(
@@ -66,9 +67,21 @@ object LlamaBridge {
     /** True when a GPU backend (Vulkan) is registered for layer offload. */
     fun supportsGpu(): Boolean = nativeSupportsGpu()
 
+    /** KV-cache element type modes for [setKvQuant]. */
+    const val KV_OFF = 0
+    const val KV_Q8_0 = 1
+    const val KV_Q4_0 = 2
+
     /** @return 0 on success; negative error code otherwise. */
     fun loadModel(path: String, nCtx: Int = 4096, nThreads: Int = 4, nGpuLayers: Int = 0): Int =
         nativeLoadModel(path, nCtx, nThreads, nGpuLayers)
+
+    /**
+     * Choose the KV-cache element type used by the NEXT [loadModel] call.
+     * 0 = f16 (default), 1 = q8_0, 2 = q4_0. Quantizing roughly halves the
+     * cache's memory, which is what keeps long contexts from OOM-ing a phone.
+     */
+    fun setKvQuant(mode: Int) = nativeSetKvQuant(mode)
 
     fun contextSize(): Int = nativeGetContextSize()
 

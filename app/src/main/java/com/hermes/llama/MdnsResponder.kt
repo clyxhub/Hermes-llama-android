@@ -6,6 +6,7 @@ import android.util.Log
 import java.io.ByteArrayOutputStream
 import java.net.DatagramPacket
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.MulticastSocket
 import java.net.NetworkInterface
 import java.util.Collections
@@ -105,13 +106,13 @@ object MdnsResponder {
             for (nif in Collections.list(nifs)) {
                 runCatching {
                     if (nif.isUp && nif.supportsMulticast() && !nif.isLoopback) {
-                        ms.joinGroup(group, nif)
+                        ms.joinGroup(InetSocketAddress(group, MDNS_PORT), nif)
                         joined = true
                     }
                 }
             }
         }
-        if (!joined) runCatching { ms.joinGroup(group) }
+        if (!joined) runCatching { ms.joinGroup(InetSocketAddress(group, MDNS_PORT)) }
     }
 
     private fun receiveLoop(ms: MulticastSocket) {

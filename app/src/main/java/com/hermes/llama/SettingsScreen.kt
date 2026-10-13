@@ -17,6 +17,7 @@ import androidx.compose.ui.unit.dp
 
 private const val KEY_LAN = "mdns_lan"
 private const val KEY_MDNS_HOST = "mdns_host"
+private const val KEY_KV_QUANT = "kv_quant"
 
 /**
  * v5: Settings, styled after PocketPal: a bold section header followed by
@@ -37,6 +38,7 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
     var hostText by remember {
         mutableStateOf(prefs.getString(KEY_MDNS_HOST, MdnsResponder.DEFAULT_HOST) ?: MdnsResponder.DEFAULT_HOST)
     }
+    var kvMode by remember { mutableStateOf(prefs.getInt(KEY_KV_QUANT, LlamaBridge.KV_Q8_0)) }
 
     Scaffold(
         topBar = {
@@ -82,6 +84,25 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                     (state.preset?.contextSize?.toString() ?: "not loaded") + " · defaults from the loaded model",
                     null
                 )
+            }
+            item {
+                SettingRow(
+                    "KV cache quantization",
+                    when (kvMode) {
+                        LlamaBridge.KV_Q4_0 -> "Q4_0 - smallest, applies on next model load"
+                        LlamaBridge.KV_Q8_0 -> "Q8_0 - halves context memory (next load)"
+                        else -> "Off (f16) - full precision"
+                    }
+                ) {
+                    TextButton(onClick = {
+                        kvMode = when (kvMode) {
+                            LlamaBridge.KV_Q8_0 -> LlamaBridge.KV_Q4_0
+                            LlamaBridge.KV_Q4_0 -> LlamaBridge.KV_OFF
+                            else -> LlamaBridge.KV_Q8_0
+                        }
+                        prefs.edit().putInt(KEY_KV_QUANT, kvMode).apply()
+                    }) { Text(kvLabel(kvMode)) }
+                }
             }
             item {
                 SettingRow(
@@ -181,6 +202,13 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
             item { SettingRow("CALISTO local ai", "0.1.0 - local llama.cpp on-device", null) }
         }
     }
+}
+
+/** Short label for a KV-cache quantization mode. */
+private fun kvLabel(mode: Int): String = when (mode) {
+    LlamaBridge.KV_Q4_0 -> "Q4_0"
+    LlamaBridge.KV_Q8_0 -> "Q8_0"
+    else -> "Off"
 }
 
 @Composable

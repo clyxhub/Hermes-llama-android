@@ -60,6 +60,19 @@ void hermes_mtmd_free() {
 // One global session for stage (a). Multi-model comes later.
 LlamaSession g_session;
 
+// HERMES-PATCH(kv-quant): the KV-cache element type the UI asked for.
+// 0 = f16 (the library default), 1 = q8_0, 2 = q4_0. Read at context
+// creation in nativeLoadModel / nativeGenerateWithMedia.
+std::atomic<int> g_kv_quant_mode{0};
+
+ggml_type hermes_kv_type(int mode) {
+    switch (mode) {
+        case 1:  return GGML_TYPE_Q8_0;
+        case 2:  return GGML_TYPE_Q4_0;
+        default: return GGML_TYPE_F16;
+    }
+}
+
 // Route llama.cpp / ggml log output (backend enumeration + the
 // "offloaded N/N layers to GPU" line) into logcat so GPU offload is
 // observable with:  adb logcat -s HermesLlama-native
@@ -85,6 +98,16 @@ std::string jstring_to_std(JNIEnv* env, jstring s) {
 } // namespace
 
 extern "C" {
+
+/**
+ * Choose the KV-cache element type for the next context creation.
+ * 0 = f16 (default), 1 = q8_0, 2 = q4_0. Call before nativeLoadModel.
+ */
+JNIEXPORT void JNICALL
+Java_com_hermes_llama_LlamaBridge_nativeSetKvQuant(JNIEnv*, jobject, jint mode) {
+    g_kv_quant_mode.store(mode);
+    LOGI("HERMES: KV-cache quantization mode = %d", (int) mode);
+}
 
 JNIEXPORT jint JNICALL
 Java_com_hermes_llama_LlamaBridge_nativeInit(JNIEnv*, jobject) {
@@ -171,6 +194,16 @@ Java_com_hermes_llama_LlamaBridge_nativeLoadModel(
     cparams.n_ctx     = static_cast<uint32_t>(nCtx > 0 ? nCtx : 4096);
     cparams.n_threads = nThreads > 0 ? nThreads : 4;
     cparams.n_batch   = 512;
+    // HERMES-PATCH(kv-quant): shrink the KV cache (halved at q8_0) so long
+    // contexts don't OOM a phone. Stays f16 unless the UI opts in.
+    {
+        const int kv_mode = g_kv_quant_mode.load();
+        if (kv_mode != 0) {
+            cparams.type_k = hermes_kv_type(kv_mode);
+            cparams.type_v = hermes_kv_type(kv_mode);
+            LOGI("HERMES: KV cache quantised (mode=%d)", kv_mode);
+        }
+    }
 
     g_session.ctx = llama_init_from_model(g_session.model, cparams);
     if (!g_session.ctx) {
@@ -498,6 +531,13 @@ Java_com_hermes_llama_LlamaBridge_nativeGenerateWithMedia(
     cparams.n_ctx     = static_cast<uint32_t>(g_session.n_ctx > 0 ? g_session.n_ctx : 4096);
     cparams.n_threads = g_session.n_threads;
     cparams.n_batch   = 512;
+    {
+        const int kv_mode = g_kv_quant_mode.load();
+        if (kv_mode != 0) {
+            cparams.type_k = hermes_kv_type(kv_mode);
+            cparams.type_v = hermes_kv_type(kv_mode);
+        }
+    }
     llama_context* ctx = llama_init_from_model(g_session.model, cparams);
     if (!ctx) { LOGE("media generate: context creation failed"); return -3; }
 

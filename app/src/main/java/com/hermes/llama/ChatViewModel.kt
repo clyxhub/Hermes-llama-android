@@ -212,11 +212,23 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             // Mark the attempt in-flight: if the process dies here, init() will
             // detect this flag on next launch and disable GPU offload.
             if (gpu > 0) prefs.edit().putBoolean(KEY_GPU_ATTEMPT, true).apply()
+            // KV-cache quantization (default q8_0): roughly halves the context
+            // memory so long contexts don't OOM the device.
+            var kvMode = prefs.getInt(KEY_KV_QUANT, LlamaBridge.KV_Q8_0)
+            LlamaBridge.setKvQuant(kvMode)
             var rc = runCatching { LlamaBridge.loadModel(path, preset0.contextSize, cfg.threads, gpu) }.getOrDefault(-99)
             if (rc != 0 && gpu > 0) {
                 Log.w(TAG, "GPU load failed rc=$rc — retrying CPU-only")
                 gpu = 0
+                LlamaBridge.setKvQuant(kvMode)
                 rc = runCatching { LlamaBridge.loadModel(path, preset0.contextSize, cfg.threads, 0) }.getOrDefault(-99)
+            }
+            if (rc != 0 && kvMode != LlamaBridge.KV_OFF) {
+                // Some models reject a quantized KV cache — fall back to f16.
+                Log.w(TAG, "load failed rc=$rc — retrying with f16 KV cache")
+                kvMode = LlamaBridge.KV_OFF
+                LlamaBridge.setKvQuant(kvMode)
+                rc = runCatching { LlamaBridge.loadModel(path, preset0.contextSize, cfg.threads, gpu) }.getOrDefault(-99)
             }
             if (rc != 0) {
                 Log.e(TAG, "load failed rc=$rc")
@@ -525,6 +537,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private const val KEY_GPU_LAYERS = "gpu_layers"
         private const val KEY_GPU_AUTO = "gpu_auto"
         private const val KEY_GPU_ATTEMPT = "gpu_attempt_inflight"
+        private const val KEY_KV_QUANT = "kv_quant"
         private const val KEY_LAST_MODEL = "last_model_path"
         private const val KEY_CURRENT = "current_chat"
         private const val KEY_THINKING = "thinking"
