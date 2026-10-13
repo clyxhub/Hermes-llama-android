@@ -95,7 +95,7 @@ object ArtifactStore {
             connectTimeout = 15_000
             readTimeout = 60_000
             instanceFollowRedirects = true
-            setRequestProperty("User-Agent", "HermesLlama/1.0")
+            setRequestProperty("User-Agent", "CalistoLocalAI/1.0")
         }
         conn.inputStream.use { input ->
             val bytes = input.readBytes()

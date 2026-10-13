@@ -30,6 +30,7 @@ class ServerService : Service() {
         when (intent?.action) {
             ACTION_STOP -> {
                 LocalServer.stop()
+                MdnsResponder.stop()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
                 ServerState.set(false, 0)
@@ -50,6 +51,14 @@ class ServerService : Service() {
                 ).apply { isDaemon = true }.start()
                 val ok = LocalServer.start(port)
                 ServerState.set(ok, if (ok) port else 0)
+                // mDNS: let LAN clients reach us by name (e.g. calisto-local.local).
+                if (ok && LocalServer.bindAll) {
+                    val host = getSharedPreferences(PREFS, MODE_PRIVATE)
+                        .getString(KEY_MDNS_HOST, MdnsResponder.DEFAULT_HOST) ?: MdnsResponder.DEFAULT_HOST
+                    MdnsResponder.start(this, host, port)
+                } else {
+                    MdnsResponder.stop()
+                }
             }
         }
         return START_STICKY
@@ -57,6 +66,7 @@ class ServerService : Service() {
 
     override fun onDestroy() {
         LocalServer.stop()
+        MdnsResponder.stop()
         ServerState.set(false, 0)
         super.onDestroy()
     }
@@ -81,8 +91,11 @@ class ServerService : Service() {
     private fun buildNotification(port: Int, auth: Boolean): Notification {
         val host = if (LocalServer.bindAll) "0.0.0.0" else "127.0.0.1"
         return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("Hermes Llama server running")
-            .setContentText("http://$host:$port/v1${if (auth) " · auth on" else ""}")
+            .setContentTitle("CALISTO local ai server running")
+            .setContentText(
+                (if (LocalServer.bindAll) MdnsResponder.url(port) else "http://$host:$port") +
+                    "/v1" + (if (auth) " · auth on" else "")
+            )
             .setSmallIcon(android.R.drawable.stat_sys_upload)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
@@ -93,6 +106,8 @@ class ServerService : Service() {
         private const val CHANNEL_ID = "hermes_server"
         private const val NOTIF_ID = 42
         private const val DEFAULT_PORT = 8080
+        private const val PREFS = "hermes_llama"
+        private const val KEY_MDNS_HOST = "mdns_host"
 
         const val ACTION_START = "com.hermes.llama.server.START"
         const val ACTION_STOP = "com.hermes.llama.server.STOP"

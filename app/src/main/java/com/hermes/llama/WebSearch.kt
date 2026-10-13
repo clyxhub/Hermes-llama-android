@@ -33,7 +33,7 @@ object WebSearch {
         val conn = (URL(url).openConnection() as HttpURLConnection).apply {
             connectTimeout = 15_000
             readTimeout = 20_000
-            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 15) HermesLlama/1.0")
+            setRequestProperty("User-Agent", "Mozilla/5.0 (Linux; Android 15) CalistoLocalAI/1.0")
             setRequestProperty("Accept", "text/html")
         }
         val html = conn.inputStream.bufferedReader().use { it.readText() }

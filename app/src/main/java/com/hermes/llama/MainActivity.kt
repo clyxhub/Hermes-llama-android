@@ -79,7 +79,7 @@ fun AppRoot(vm: ChatViewModel = viewModel()) {
             ModalDrawerSheet {
                 Spacer(Modifier.height(12.dp))
                 Text(
-                    "Hermes Llama",
+                    "CALISTO local ai",
                     style = MaterialTheme.typography.titleLarge,
                     fontWeight = FontWeight.SemiBold,
                     modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
@@ -252,7 +252,7 @@ private fun EmptyModels(onOpenModels: () -> Unit) {
         Text("No Models Available", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Download a model to start chatting with Hermes Llama",
+            "Download a model to start chatting with CALISTO local ai",
             style = MaterialTheme.typography.bodyMedium,
             textAlign = TextAlign.Center,
             color = MaterialTheme.colorScheme.onSurfaceVariant
@@ -436,7 +436,7 @@ private fun InfoScreen(onMenu: () -> Unit) {
             Modifier.padding(pad).padding(16.dp).fillMaxSize(),
             verticalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Text("Hermes Llama", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text("CALISTO local ai", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
             Text(
                 "Local GGUF inference with an OpenAI-compatible server.",
                 style = MaterialTheme.typography.bodyMedium

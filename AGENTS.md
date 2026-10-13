@@ -1,4 +1,4 @@
-# AGENTS.md — Hermes Llama (`com.hermes.llama`)
+# AGENTS.md — CALISTO local ai (repo `hermes-llama-android`, package `com.hermes.llama`)
 
 **READ THIS FILE FIRST, EVERY SESSION. Never code from memory of the plan.**
 Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full spec embedded below.
@@ -45,6 +45,10 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
 | 2026-10-13 | `ProviderStore.providersById(context)` — the call in `ModelRepository.cloudEntries()` was missing its `Context` (surfaced by the first real compile: `ModelRepository.kt:128:52 No value passed for parameter 'context'`) | `providersById` is context-taking like every other `ProviderStore` call |
 | 2026-10-13 | **General artifact pipeline** (14th requirement): any generative model — local (e.g. a diffusion image model) or cloud (video/music/whatever) — can hand the app a file of any type; it is materialised to `filesDir/generated`, shown as a card under the assistant bubble, and can be viewed, **tested/interacted with** (HTML → in-app `WebView`), shared, opened, and downloaded to public Downloads | user: "receive, view and download files of anykind from generative models"; "i need to be able to interact with the artifact system e.g. say its an html file and you want to test it" |
 | 2026-10-13 | Artifact pipeline is dependency-free (hand-rolled `ArtifactStore` build/scan/download + `FileProvider`), no new Gradle deps | keeps the dependency set unchanged (consistent with the embedded-server decision) |
+| 2026-10-13 | **mDNS for the live server** (15th requirement): a hand-rolled, dependency-free mDNS/DNS-SD responder (`MdnsResponder.kt`) advertises `<host>.local` (A record = LAN IPv4) + `_http._tcp.local` (SRV→port, TXT `path=/`) so LAN clients type `http://calisto-local.local:8080/v1` instead of an IP. Started only when the server is LAN-bound (needs a `WifiManager.MulticastLock` or Android drops multicast) | user: "setup mdns for live server … type something like 'calisto-local.ai'" |
+| 2026-10-13 | mDNS suffix is **`.local`**, not the `.ai` in the user's example | `.local` is resolved natively by mDNS/DNS-SD clients; a custom `.ai` TLD would need separate public-DNS delegation to resolve |
+| 2026-10-13 | App display name → **"CALISTO local ai"** (16th requirement); the package id stays `com.hermes.llama` (internal `Theme.HermesLlama` style kept too, to avoid manifest churn) | user: "change the name of this app to CALISTO local ai" |
+| 2026-10-13 | mDNS is dependency-free (`MulticastSocket` + hand-written DNS wire format), no new Gradle deps | consistent with the embedded-server / artifact-pipeline decisions |
 
 ---
 
@@ -62,8 +66,10 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
 | h Model sources A/B/C | DONE | this flow | A local import (SAF); B `HuggingFaceClient.kt` (search / file list / resumable download); C `CloudEngine.kt` + `CloudProviders` (12 BYOK providers) |
 | quick wins (off-plan) | DONE | a9a4fba, ef550f6 | auto-load model, tok/s, chat history, clear button |
 | v5 UI/UX overhaul (PocketAI-parity) | IN PROGRESS | (uncommitted) | multi-section drawer; new data layer `ChatStore`/`ModelRepository`/`ProviderStore`/`VoiceIO`/`WebSearch`; rewritten `ChatViewModel`+`MainActivity`; pending: `ChatsScreen`/`ModelsScreen`/`HuggingFaceScreen`/`ProvidersScreen`/`SettingsScreen`, GPU-crash fix, single CI build |
-| v5 defect batch #2 (13 fixes, incl. live-server model list) | IN PROGRESS | 8c1231b | folds defect #13 into the same flow: `LocalServer` gains a multi-model catalogue (local GGUFs + selected cloud models) so `GET /v1/models` is never empty; published from `ChatViewModel.refreshModels()` and rebuilt by `ServerService` on start. Build 38401007129 failed on a single missing-`context` error (`ModelRepository.kt:128`); fixed, re-queued together with the 14th requirement. ONE Rule-8 build for the whole batch. |
-| **14th requirement — general artifact pipeline** | IN PROGRESS | (uncommitted) | new `Artifact.kt` (data model + `ArtifactStore` + `ArtifactScanner`) and `ArtifactViewer.kt` (card + interactive viewer: image/audio/video/text inline, HTML **testable in an in-app WebView**); `Msg.artifacts` + `ChatStore` persistence; `ChatViewModel` scans every reply (Markdown/bare URLs, base64 fields, data-URIs) and materialises files into `filesDir/generated`; `MainActivity` renders a card under each assistant bubble + hosts the viewer; `FileProvider` (`@xml/file_paths`) enables share/open; "Save" exports to public Downloads via MediaStore. Folded into the SAME Rule-8 build. |
+| v5 defect batch #2 (13 fixes, incl. live-server model list) | DONE | 99c73d4 | `LocalServer` multi-model catalogue (local GGUFs + selected cloud models) so `GET /v1/models` is never empty; published from `ChatViewModel.refreshModels()` and rebuilt by `ServerService` on start; plus the `ProviderStore.providersById(context)` fix. Build 38404602086 green. |
+| **14th requirement — general artifact pipeline** | DONE | 99c73d4 | new `Artifact.kt` (data model + `ArtifactStore` + `ArtifactScanner`) and `ArtifactViewer.kt` (card + interactive viewer: image/audio/video/text inline, HTML **testable in an in-app WebView**); `Msg.artifacts` + `ChatStore` persistence; `ChatViewModel` scans every reply (Markdown/bare URLs, base64 fields, data-URIs) and materialises files into `filesDir/generated`; `MainActivity` renders a card under each assistant bubble + hosts the viewer; `FileProvider` (`@xml/file_paths`) enables share/open; "Save" exports to public Downloads via MediaStore. Build 38404602086 green. |
+| **15th requirement — mDNS for the live server** | DONE | (this flow) | `MdnsResponder.kt` (dependency-free mDNS/DNS-SD: A + PTR + SRV + TXT over `MulticastSocket` + `MulticastLock`); wired into `ServerService` (start on LAN bind, stop on stop/destroy; notification shows the mDNS URL); `ACCESS_WIFI_STATE` + `CHANGE_WIFI_MULTICAST_STATE` added to the manifest; Settings gains a "LAN access (mDNS)" switch + an editable "Server name" (prefs `mdns_lan` / `mdns_host`). LAN users type `http://calisto-local.local:8080/v1`. |
+| **16th requirement — rename to "CALISTO local ai"** | DONE | (this flow) | `app_name` (strings.xml) + drawer title + Info heading + Settings About row + empty-chat copy + server notification title + artifact/web-search User-Agents all renamed. Package id stays `com.hermes.llama`. Folded into the SAME Rule-8 build as the 15th requirement. |
 
 ## DEVIATIONS (work outside plan order)
 - Auto-load last model + tok/s readout (`a9a4fba`) — not a plan stage
@@ -98,6 +104,8 @@ projector auto-pair + a real generation (needs a SAF file pick, UI-driven).
 
 | 38401007129 | 8c1231b | failure | `:app:compileReleaseKotlin` — a single error: `ModelRepository.kt:128:52 No value passed for parameter 'context'` (`ProviderStore.providersById()` called without a `Context`). Log recovered from the auto-pushed `ci-diagnostics` branch (`ci-logs/last-build.log`). Fix: `ProviderStore.providersById(context)`. |
 
+| 38404602086 | 99c73d4 | success | `:app:compileReleaseKotlin` clean; APK built (the 14th-requirement artifact pipeline compiles). Validates the 13 defect fixes (incl. the live-server multi-model catalogue) + the artifact pipeline + the `providersById(context)` fix. This is the green baseline the mDNS (15th) + rename (16th) batch builds on. |
+
 **v5 overhaul: DONE.** The single Rule-8 fix+restyle build (38391843182) is green and installed;
 this docs-only tracker update is pushed with `[skip ci]` so it does not consume another build.
 Still needs a GGUF present on-device to exercise a real load + projector auto-pair + MEMBUDGET.
@@ -124,18 +132,23 @@ User msg (paraphrased, high-expectation, verbatim intent):
     model — local (e.g. a diffusion image model) or cloud (video / music / "whatever file type model") — and be able
     to **interact** with it (e.g. test an HTML file in an in-app WebView). Model-agnostic: any produced file flows
     through the same pipeline.
+15. **mDNS for the live server (added mid-flow):** don't force LAN users to type an unmemorable IP — advertise a name via
+    mDNS/DNS-SD so they can use e.g. `http://calisto-local.local:8080/v1`. (The user's example `.ai` becomes `.local`,
+    the suffix mDNS actually resolves.)
+16. **Rename the app to "CALISTO local ai" (added mid-flow).**
 
 Implementation surface (current flow):
 - New data layer: `ChatStore.kt` (multi-chat), `ModelRepository.kt` (local scan + mmproj pairing + cloud merge),
   `ProviderStore.kt` (unlimited keys + per-model selection), `VoiceIO.kt` (TTS/STT), `WebSearch.kt` (DuckDuckGo context injection),
-  `Artifact.kt` + `ArtifactViewer.kt` (general generated-file pipeline: materialise → card → interactive viewer).
+  `Artifact.kt` + `ArtifactViewer.kt` (general generated-file pipeline: materialise → card → interactive viewer),
+  `MdnsResponder.kt` (dependency-free mDNS/DNS-SD responder that advertises the LAN server by name).
 - Rewritten: `ChatViewModel.kt` (UiState + GPU→CPU fallback + `/no_think` + trace stripping), `MainActivity.kt`
   (drawer host + `Section` enum + full chat screen).
 - All five section screens exist: `ChatsScreen` / `HuggingFaceScreen` / `ProvidersScreen` (built this
   flow) plus `ModelsScreen` / `SettingsScreen` (rebuilt to PocketPal parity). `MainActivity.kt` hosts
   the shared drawer + `Section` enum, the PocketPal-style chat screen + empty "No Models Available"
   state, and the `shareText` / `copyUriToTemp` helpers used across screens.
-- Structural gate: 22 `.kt` files, `BAD FILES: 0` (comment/string-stripped brace+paren balance).
+- Structural gate: 23 `.kt` files, `BAD FILES: 0` (char-by-char tokenizer that skips comments/strings; brace+paren balance).
 
 ---
 

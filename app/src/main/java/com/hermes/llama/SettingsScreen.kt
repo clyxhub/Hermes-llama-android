@@ -1,5 +1,6 @@
 package com.hermes.llama
 
+import android.content.Context
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material.icons.Icons
@@ -13,6 +14,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+
+private const val KEY_LAN = "mdns_lan"
+private const val KEY_MDNS_HOST = "mdns_host"
 
 /**
  * v5: Settings, styled after PocketPal: a bold section header followed by
@@ -28,6 +32,11 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
     val context = LocalContext.current
     var serverOn by remember { mutableStateOf(ServerState.running) }
     var portText by remember { mutableStateOf(state.serverPort.toString()) }
+    val prefs = remember { context.getSharedPreferences("hermes_llama", Context.MODE_PRIVATE) }
+    var lanOn by remember { mutableStateOf(prefs.getBoolean(KEY_LAN, false)) }
+    var hostText by remember {
+        mutableStateOf(prefs.getString(KEY_MDNS_HOST, MdnsResponder.DEFAULT_HOST) ?: MdnsResponder.DEFAULT_HOST)
+    }
 
     Scaffold(
         topBar = {
@@ -112,7 +121,7 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                     if (on) {
                         val p = portText.toIntOrNull() ?: 8080
                         vm.setServer(true, p)
-                        ServerService.start(context, p, false, null)
+                        ServerService.start(context, p, lanOn, null)
                     } else {
                         ServerService.stop(context)
                         vm.setServer(false, 0)
@@ -122,6 +131,35 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
             }
             item {
                 SettingRow("Server address", "http://127.0.0.1:${state.serverPort}/v1", null)
+            }
+            item {
+                SwitchRow(
+                    "LAN access (mDNS)",
+                    if (lanOn) "Reachable at ${MdnsResponder.url(state.serverPort)}"
+                    else "Reachable only on this device (localhost)",
+                    lanOn
+                ) { on ->
+                    prefs.edit().putBoolean(KEY_LAN, on).apply()
+                    lanOn = on
+                    if (serverOn) ServerService.start(context, portText.toIntOrNull() ?: 8080, on, null)
+                }
+            }
+            item {
+                SettingRow(
+                    "Server name",
+                    "${MdnsResponder.hostname()} · ${if (MdnsResponder.isRunning) "advertising" else "mDNS (.local)"}"
+                ) {
+                    OutlinedTextField(
+                        value = hostText,
+                        onValueChange = { v ->
+                            hostText = v
+                            prefs.edit().putString(KEY_MDNS_HOST, v).apply()
+                            if (MdnsResponder.isRunning) MdnsResponder.start(context, v, state.serverPort)
+                        },
+                        singleLine = true,
+                        modifier = Modifier.width(170.dp)
+                    )
+                }
             }
             item {
                 SettingRow("Port", portText) {
@@ -140,7 +178,7 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
             item { SettingRow("Enable Weight Repacking", "Enabled by default", null) }
 
             item { SectionHeader("About") }
-            item { SettingRow("Hermes Llama", "0.1.0 - local llama.cpp on-device", null) }
+            item { SettingRow("CALISTO local ai", "0.1.0 - local llama.cpp on-device", null) }
         }
     }
 }
