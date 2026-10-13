@@ -77,6 +77,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             gpuAuto = autoPref,
             thinking = prefs.getBoolean(KEY_THINKING, false),
             webSearch = prefs.getBoolean(KEY_WEB, false),
+            serverPort = prefs.getInt(KEY_SERVER_PORT, 8080),
             status = "No model loaded"
         )
 
@@ -214,7 +215,9 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             if (gpu > 0) prefs.edit().putBoolean(KEY_GPU_ATTEMPT, true).apply()
             // KV-cache quantization (default q8_0): roughly halves the context
             // memory so long contexts don't OOM the device.
-            var kvMode = prefs.getInt(KEY_KV_QUANT, LlamaBridge.KV_Q8_0)
+            // Default to f16 (OFF): quantized KV caches are opt-in because some
+            // backends/models reject them, and a bad KV cache silently kills output.
+            var kvMode = prefs.getInt(KEY_KV_QUANT, LlamaBridge.KV_OFF)
             LlamaBridge.setKvQuant(kvMode)
             var rc = runCatching { LlamaBridge.loadModel(path, preset0.contextSize, cfg.threads, gpu) }.getOrDefault(-99)
             if (rc != 0 && gpu > 0) {
@@ -402,10 +405,16 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val msgs = chat.messages.map { it.role to it.content }
-        runCatching {
+        val result = runCatching {
             CloudEngine.chat(provider, key, model, msgs, 0.7f) { t ->
                 sb.append(t); _state.update { it.copy(streaming = sb.toString()) }
             }
+        }
+        // Never show a silent empty reply: if the request failed and nothing was
+        // streamed, tell the user exactly what went wrong in the assistant bubble.
+        if (result.isFailure && sb.isBlank()) {
+            val why = result.exceptionOrNull()?.message ?: "unknown error"
+            sb.append("[request failed — $why]")
         }
     }
 
@@ -448,7 +457,13 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun setWebSearch(on: Boolean) { prefs.edit().putBoolean(KEY_WEB, on).apply(); _state.update { it.copy(webSearch = on) } }
     fun setAttachment(path: String, isAudio: Boolean = false) = _state.update { it.copy(attachment = path, attachmentIsAudio = isAudio) }
     fun clearAttachment() = _state.update { it.copy(attachment = null, attachmentIsAudio = false) }
-    fun setServer(running: Boolean, port: Int = _state.value.serverPort) = _state.update { it.copy(serverRunning = running, serverPort = port) }
+    /** Server state for the UI. The port is persisted and never zeroed when the
+     *  server stops — 0 is the "not running" socket state, not the configured port. */
+    fun setServer(running: Boolean, port: Int = _state.value.serverPort) {
+        val effective = if (port > 0) port else _state.value.serverPort
+        if (effective > 0) prefs.edit().putInt(KEY_SERVER_PORT, effective).apply()
+        _state.update { it.copy(serverRunning = running, serverPort = effective) }
+    }
     fun bumpProviderSelection() = _state.update { it.copy(providerSelectionVersion = it.providerSelectionVersion + 1) }
 
     // --- generated artifacts (any generative model: local or cloud) ----------
@@ -534,6 +549,7 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
         private const val THINK_OPEN = "\u003Cthink\u003E"
         private const val THINK_CLOSE = "\u003C/think\u003E"
         private const val NULL_TOKEN = "\u003C\u003E"
+        private const val KEY_SERVER_PORT = "server_port"
         private const val KEY_GPU_LAYERS = "gpu_layers"
         private const val KEY_GPU_AUTO = "gpu_auto"
         private const val KEY_GPU_ATTEMPT = "gpu_attempt_inflight"

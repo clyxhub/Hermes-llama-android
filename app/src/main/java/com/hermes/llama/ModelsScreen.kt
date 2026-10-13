@@ -5,19 +5,44 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CloudDownload
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.Folder
+import androidx.compose.material.icons.filled.Key
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.widget.Toast
 import java.io.File
+
+/** Copy a picked SAF uri into the app's own models dir (a default scan root). */
+internal fun importGguf(context: android.content.Context, uri: Uri): String? = runCatching {
+    val dir = context.getExternalFilesDir("models") ?: return@runCatching null
+    var name = runCatching {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        }
+    }.getOrNull() ?: uri.lastPathSegment ?: "model.gguf"
+    if (!name.endsWith(".gguf", true)) name += ".gguf"
+    val out = File(dir, name)
+    context.contentResolver.openInputStream(uri)!!.use { input ->
+        out.outputStream().use { output -> input.copyTo(output) }
+    }
+    out.absolutePath
+}.getOrNull()
 
 /**
  * v5: the model library page, styled after PocketPal's Models screen.
@@ -32,10 +57,25 @@ import java.io.File
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ModelsScreen(vm: ChatViewModel, onMenu: () -> Unit, onFindMore: () -> Unit) {
+fun ModelsScreen(vm: ChatViewModel, onMenu: () -> Unit, onFindMore: () -> Unit, onOpenProviders: () -> Unit) {
     val state by vm.state.collectAsState()
+    val context = LocalContext.current
     var expandedId by remember { mutableStateOf<String?>(null) }
     var pendingDelete by remember { mutableStateOf<ModelRepository.Entry?>(null) }
+    var addMenu by remember { mutableStateOf(false) }
+
+    // SAF picker: copy any *.gguf already on the device into the app's models dir.
+    val ggufPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            val copied = importGguf(context, uri)
+            if (copied != null) {
+                Toast.makeText(context, "Model imported", Toast.LENGTH_SHORT).show()
+                vm.refreshModelsNow()
+            } else {
+                Toast.makeText(context, "Import failed", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
 
     pendingDelete?.let { e ->
         AlertDialog(
@@ -64,7 +104,26 @@ fun ModelsScreen(vm: ChatViewModel, onMenu: () -> Unit, onFindMore: () -> Unit) 
             )
         },
         floatingActionButton = {
-            FloatingActionButton(onClick = onFindMore) { Icon(Icons.Default.Add, "Find more models") }
+            Box {
+                FloatingActionButton(onClick = { addMenu = true }) { Icon(Icons.Default.Add, "Add a model") }
+                DropdownMenu(expanded = addMenu, onDismissRequest = { addMenu = false }) {
+                    DropdownMenuItem(
+                        text = { Text("Add model from device") },
+                        leadingIcon = { Icon(Icons.Default.Folder, null) },
+                        onClick = { addMenu = false; ggufPicker.launch("*/*") }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("HuggingFace") },
+                        leadingIcon = { Icon(Icons.Default.CloudDownload, null) },
+                        onClick = { addMenu = false; onFindMore() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Model API provider") },
+                        leadingIcon = { Icon(Icons.Default.Key, null) },
+                        onClick = { addMenu = false; onOpenProviders() }
+                    )
+                }
+            }
         }
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
@@ -72,7 +131,7 @@ fun ModelsScreen(vm: ChatViewModel, onMenu: () -> Unit, onFindMore: () -> Unit) 
                 Column(Modifier.padding(12.dp)) {
                     Text("Available to Download", fontWeight = FontWeight.SemiBold)
                     Text(
-                        "Use the + button to find more models on HuggingFace",
+                        "Use the + button to add a model from this device, HuggingFace, or an API provider",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

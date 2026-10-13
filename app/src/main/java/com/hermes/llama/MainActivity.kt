@@ -3,6 +3,7 @@ package com.hermes.llama
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.provider.OpenableColumns
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -104,7 +105,11 @@ fun AppRoot(vm: ChatViewModel = viewModel()) {
         when (section) {
             Section.CHAT -> ChatScreen(vm, onMenu = open, onOpenModels = { section = Section.MODELS })
             Section.CHATS -> ChatsScreen(vm, onMenu = open, onOpen = { section = Section.CHAT })
-            Section.MODELS -> ModelsScreen(vm, onMenu = open, onFindMore = { section = Section.HUGGINGFACE })
+            Section.MODELS -> ModelsScreen(
+                vm, onMenu = open,
+                onFindMore = { section = Section.HUGGINGFACE },
+                onOpenProviders = { section = Section.PROVIDERS }
+            )
             Section.HUGGINGFACE -> HuggingFaceScreen(vm, onMenu = open)
             Section.PROVIDERS -> ProvidersScreen(vm, onMenu = open)
             Section.SETTINGS -> SettingsScreen(vm, onMenu = open)
@@ -134,6 +139,18 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onOpenModels: () -> Unit) 
     }
     val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri != null) copyUriToTemp(context, uri, isAudio = true)?.let { vm.setAttachment(it, true) }
+    }
+    // 21st: generic file picker so any document on the phone can be attached;
+    // text files are inlined into the message.
+    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) {
+            val f = copyUriToTemp(context, uri, isAudio = false, keepName = true)
+            if (f != null) {
+                vm.setAttachment(f, isAudio = false)
+                input = (input + "\n\n[attached file: " + File(f).name + "]\n" +
+                    runCatching { File(f).readText().take(4000) }.getOrDefault("(binary file)"))
+            }
+        }
     }
     val voiceInput = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
         VoiceIO.parseStt(res.data)?.let { input = it }
@@ -169,7 +186,7 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onOpenModels: () -> Unit) 
                 },
                 title = { Text("Chat") },
                 actions = {
-                    IconButton(onClick = { vm.newChat() }) { Icon(Icons.Default.Add, "New chat") }
+                    IconButton(onClick = { vm.newChat() }) { Icon(Icons.Default.Create, "New chat") }
                     if (state.busy) {
                         IconButton(onClick = { vm.stop() }) { Icon(Icons.Default.Stop, "Stop") }
                     }
@@ -192,6 +209,7 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onOpenModels: () -> Unit) 
                     onToggleWebSearch = { vm.setWebSearch(!state.webSearch) },
                     onAttachImage = { imagePicker.launch("image/*") },
                     onAttachAudio = { audioPicker.launch("audio/*") },
+                    onAttachFile = { filePicker.launch("*/*") },
                     onClearAttachment = { vm.clearAttachment() },
                     onVoice = { voiceInput.launch(VoiceIO.sttIntent()) },
                     onSend = {
@@ -364,6 +382,7 @@ private fun Composer(
     onToggleWebSearch: () -> Unit,
     onAttachImage: () -> Unit,
     onAttachAudio: () -> Unit,
+    onAttachFile: () -> Unit,
     onClearAttachment: () -> Unit,
     onVoice: () -> Unit,
     onSend: () -> Unit
@@ -401,6 +420,7 @@ private fun Composer(
                 if (showAudioAttach) {
                     IconButton(onClick = onAttachAudio) { Icon(Icons.Default.MusicNote, "Attach audio") }
                 }
+                IconButton(onClick = onAttachFile) { Icon(Icons.Default.AttachFile, "Attach file") }
                 IconButton(onClick = onVoice) { Icon(Icons.Default.Mic, "Voice input") }
                 Spacer(Modifier.weight(1f))
                 FilledIconButton(onClick = onSend, enabled = !busy) { Icon(Icons.Default.Send, "Send") }
@@ -469,9 +489,15 @@ fun shareText(context: Context, text: String, title: String) {
 }
 
 /** Copy a picked content Uri into a cache file the native mtmd path can read. */
-private fun copyUriToTemp(context: Context, uri: Uri, isAudio: Boolean = false): String? = runCatching {
-    val ext = if (isAudio) "wav" else "jpg"
-    val f = File(context.cacheDir, "attach_${System.currentTimeMillis()}.$ext")
+private fun copyUriToTemp(context: Context, uri: Uri, isAudio: Boolean = false, keepName: Boolean = false): String? = runCatching {
+    val name = if (keepName) {
+        context.contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use { c ->
+            if (c.moveToFirst()) c.getString(0) else null
+        } ?: "attach_${System.currentTimeMillis()}"
+    } else "attach_${System.currentTimeMillis()}"
+    val ext = if (isAudio) "wav" else (name.substringAfterLast('.', "jpg").take(8))
+    val base = if (isAudio) "attach_${System.currentTimeMillis()}" else name.substringBeforeLast('.', name)
+    val f = File(context.cacheDir, "$base.$ext")
     context.contentResolver.openInputStream(uri)!!.use { input ->
         f.outputStream().use { output -> input.copyTo(output) }
     }

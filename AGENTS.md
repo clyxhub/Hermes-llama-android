@@ -121,6 +121,7 @@ projector auto-pair + a real generation (needs a SAF file pick, UI-driven).
 
 | 38411993802 | e09c18f | success | `:app:compileReleaseKotlin` clean; APK built. The single Rule-8 build for the 17th-requirement batch (`DeviceFit.kt` + `HuggingFaceScreen.kt` wiring + docs). Confirms the advisory hardware-fit warning compiles and ships (download path untouched). |
 
+| (pending) | 18-27 batch | pending | Items 18-27: model+mmproj file picker; 3-option + menu; pencil new-chat icon; chat file attach; cloud error surfacing (fix for silent "..." no-output); KV default f16; dedup Settings toggles; server port persistence (fix stuck :0); hostname calisto-ai.local; Providers key-box collapse + per-provider model search. Single Rule-8 build. |
 **v5 overhaul: DONE.** The single Rule-8 fix+restyle build (38391843182) is green and installed;
 this docs-only tracker update is pushed with `[skip ci]` so it does not consume another build.
 Still needs a GGUF present on-device to exercise a real load + projector auto-pair + MEMBUDGET.

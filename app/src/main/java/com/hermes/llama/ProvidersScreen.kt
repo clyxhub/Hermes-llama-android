@@ -10,6 +10,7 @@ import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -51,7 +52,7 @@ fun ProvidersScreen(vm: ChatViewModel, onMenu: () -> Unit) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val rev = ProviderUi.revision
-    var modelQuery by remember { mutableStateOf("") }
+
     var showCustom by remember { mutableStateOf(false) }
 
     val providers = remember(rev) { ProviderStore.allProviders(context) }
@@ -85,15 +86,8 @@ fun ProvidersScreen(vm: ChatViewModel, onMenu: () -> Unit) {
             contentPadding = PaddingValues(8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp)
         ) {
-            item {
-                OutlinedTextField(
-                    value = modelQuery, onValueChange = { modelQuery = it },
-                    label = { Text("Filter models across providers") },
-                    singleLine = true, modifier = Modifier.fillMaxWidth()
-                )
-            }
             items(providers, key = { it.id }) { p ->
-                ProviderCard(p = p, modelQuery = modelQuery, scope = scope, vm = vm)
+                ProviderCard(p = p, scope = scope, vm = vm)
             }
             item {
                 Text(
@@ -110,7 +104,6 @@ fun ProvidersScreen(vm: ChatViewModel, onMenu: () -> Unit) {
 @Composable
 private fun ProviderCard(
     p: CloudProviders.Provider,
-    modelQuery: String,
     scope: CoroutineScope,
     vm: ChatViewModel
 ) {
@@ -118,6 +111,8 @@ private fun ProviderCard(
     val keys = ProviderStore.keysFor(context, p.id)
     val open = ProviderUi.expanded[p.id] == true
     var keyField by remember { mutableStateOf("") }
+    var modelSearch by remember(p.id) { mutableStateOf("") }
+    var showKeyField by remember(p.id) { mutableStateOf(keys.isEmpty()) }
     var baseField by remember(p.id) { mutableStateOf(p.baseUrl) }
 
     Card(Modifier.fillMaxWidth()) {
@@ -171,21 +166,27 @@ private fun ProviderCard(
                     }
                 }
 
-                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                    OutlinedTextField(
-                        value = keyField, onValueChange = { keyField = it },
-                        placeholder = { Text("Paste API key") }, singleLine = true,
-                        modifier = Modifier.weight(1f)
-                    )
-                    Spacer(Modifier.width(6.dp))
-                    IconButton(onClick = {
-                        if (keyField.isNotBlank()) {
-                            ProviderStore.addKey(context, p.id, "", keyField.trim())
-                            keyField = ""
-                            ProviderUi.refresh()
-                            vm.refreshModelsNow()
-                        }
-                    }) { Icon(Icons.Default.Add, "Add key") }
+                // Item 27: don't permanently show an empty key box once a key exists.
+                if (showKeyField) {
+                    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                        OutlinedTextField(
+                            value = keyField, onValueChange = { keyField = it },
+                            placeholder = { Text("Paste API key") }, singleLine = true,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Spacer(Modifier.width(6.dp))
+                        IconButton(onClick = {
+                            if (keyField.isNotBlank()) {
+                                ProviderStore.addKey(context, p.id, "", keyField.trim())
+                                keyField = ""
+                                showKeyField = false
+                                ProviderUi.refresh()
+                                vm.refreshModelsNow()
+                            }
+                        }) { Icon(Icons.Default.Add, "Add key") }
+                    }
+                } else {
+                    TextButton(onClick = { showKeyField = true }) { Text("Add another key") }
                 }
 
                 Spacer(Modifier.height(6.dp))
@@ -213,8 +214,15 @@ private fun ProviderCard(
                 }
 
                 val all = ProviderUi.fetched[p.id] ?: emptyList()
-                val shown = all.filter { modelQuery.isBlank() || it.contains(modelQuery, true) }
+                val shown = all.filter { modelSearch.isBlank() || it.contains(modelSearch, true) }
                 if (all.isNotEmpty()) {
+                    OutlinedTextField(
+                        value = modelSearch, onValueChange = { modelSearch = it },
+                        placeholder = { Text("Search models (e.g. llama, mistral)") },
+                        singleLine = true,
+                        trailingIcon = { Icon(Icons.Default.Search, null) },
+                        modifier = Modifier.fillMaxWidth().padding(top = 6.dp)
+                    )
                     Text("${shown.size} model(s) — tick to surface on the Models page",
                         style = MaterialTheme.typography.labelSmall,
                         modifier = Modifier.padding(top = 4.dp))

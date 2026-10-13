@@ -87,6 +87,14 @@ object CloudEngine {
             .put("stream", true)
         conn.outputStream.use { it.write(payload.toString().toByteArray(Charsets.UTF_8)) }
 
+        // Surface HTTP failures instead of silently returning "" (the caller used
+        // to show an empty assistant bubble with no explanation).
+        val code = conn.responseCode
+        if (code !in 200..299) {
+            val detail = runCatching { conn.errorStream?.bufferedReader()?.use { it.readText() } }.getOrNull()
+            throw RuntimeException("HTTP $code" + (detail?.take(300)?.let { " — $it" } ?: ""))
+        }
+
         val sb = StringBuilder()
         BufferedReader(conn.inputStream.reader()).useLines { lines ->
             lines.forEach { line ->

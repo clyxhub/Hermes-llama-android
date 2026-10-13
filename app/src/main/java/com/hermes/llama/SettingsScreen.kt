@@ -116,21 +116,8 @@ fun SettingsScreen(vm: ChatViewModel, onMenu: () -> Unit) {
                 )
             }
 
-            item { SectionHeader("Generation Settings") }
-            item {
-                SwitchRow(
-                    "Thinking / reasoning",
-                    "Let the model emit a reasoning trace",
-                    state.thinking
-                ) { vm.setThinking(it) }
-            }
-            item {
-                SwitchRow(
-                    "Web search",
-                    "Ground answers with DuckDuckGo results",
-                    state.webSearch
-                ) { vm.setWebSearch(it) }
-            }
+            // Thinking / web-search live in the chat composer (single source of
+            // truth) — deliberately NOT duplicated here.
 
             item { SectionHeader("Local Server") }
             item {

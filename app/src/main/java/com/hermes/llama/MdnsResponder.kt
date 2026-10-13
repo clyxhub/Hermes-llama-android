@@ -31,7 +31,7 @@ object MdnsResponder {
     private const val MDNS_PORT = 5353
     private const val SVC_TYPE = "_http._tcp.local"
 
-    const val DEFAULT_HOST = "calisto-local"
+    const val DEFAULT_HOST = "calisto-ai"
     const val SERVICE_NAME = "CALISTO local ai"
 
     @Volatile private var socket: MulticastSocket? = null

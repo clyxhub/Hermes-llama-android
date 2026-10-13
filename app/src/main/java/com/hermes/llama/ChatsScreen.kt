@@ -55,14 +55,14 @@ fun ChatsScreen(vm: ChatViewModel, onMenu: () -> Unit, onOpen: (String) -> Unit)
                 navigationIcon = { IconButton(onClick = onMenu) { Icon(Icons.Default.Menu, "Menu") } },
                 title = { Text("Chats") },
                 actions = {
-                    IconButton(onClick = { vm.newChat() }) { Icon(Icons.Default.Add, "New chat") }
+                    IconButton(onClick = { vm.newChat() }) { Icon(Icons.Default.Create, "New chat") }
                 }
             )
         }
     ) { pad ->
         if (state.chats.isEmpty()) {
             Box(Modifier.padding(pad).fillMaxSize(), contentAlignment = Alignment.Center) {
-                Text("No chats yet. Tap + to start one.")
+                Text("No chats yet. Tap the pencil icon above to start one.")
             }
         } else {
             LazyColumn(
