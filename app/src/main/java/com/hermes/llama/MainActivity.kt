@@ -1,282 +1,225 @@
 package com.hermes.llama
 
-import android.app.Activity
-import android.content.ClipData
-import android.content.ClipboardManager
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Add
-import androidx.compose.material.icons.filled.AttachFile
-import androidx.compose.material.icons.filled.Clear
-import androidx.compose.material.icons.filled.ContentCopy
-import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Edit
-import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Refresh
-import androidx.compose.material.icons.filled.Send
-import androidx.compose.material.icons.filled.Settings
-import androidx.compose.material.icons.filled.Share
-import androidx.compose.material.icons.filled.Stop
-import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
-import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
 
-/** Top-level navigation sections. */
-enum class Section { CHAT, CHATS, MODELS, HUGGINGFACE, PROVIDERS, SETTINGS }
+/**
+ * v5: sections reachable from the navigation drawer.
+ *
+ * Placement + style mirror PocketPal AI (full-width icon+label drawer items,
+ * Chat first, Models/Settings/App Info present). The extra entries — Chats,
+ * HuggingFace, Providers — are this app's differentiators.
+ */
+enum class Section(val label: String, val icon: ImageVector) {
+    CHAT("Chat", Icons.Default.Chat),
+    CHATS("Chats", Icons.Default.History),
+    MODELS("Models", Icons.Default.Storage),
+    HUGGINGFACE("HuggingFace", Icons.Default.CloudDownload),
+    PROVIDERS("Providers", Icons.Default.Key),
+    SETTINGS("Settings", Icons.Default.Settings),
+    INFO("App Info", Icons.Default.Info)
+}
 
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { MaterialTheme(colorScheme = darkColorScheme()) { AppRoot() } }
+        setContent { HermesTheme { AppRoot() } }
     }
 }
 
-// --- small helpers ---------------------------------------------------------
-
-/** Copies a content:// URI into app storage and returns the real path. */
-fun materialise(context: Context, uri: Uri, subdir: String = "media"): String? = runCatching {
-    val name = uri.lastPathSegment?.substringAfterLast('/') ?: "file.bin"
-    val dir = File(context.filesDir, subdir).apply { mkdirs() }
-    val dst = File(dir, name)
-    context.contentResolver.openInputStream(uri)!!.use { input ->
-        FileOutputStream(dst).use { output -> input.copyTo(output, 1 shl 20) }
-    }
-    dst.absolutePath
-}.getOrNull()
-
-fun copyToClipboard(context: Context, text: String) {
-    val cm = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-    cm.setPrimaryClip(ClipData.newPlainText("hermes", text))
-    Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+/** Compose Material3 theme that follows the system light/dark setting. */
+@Composable
+fun HermesTheme(content: @Composable () -> Unit) {
+    val dark = isSystemInDarkTheme()
+    MaterialTheme(
+        colorScheme = if (dark) darkColorScheme() else lightColorScheme(),
+        content = content
+    )
 }
 
-fun shareText(context: Context, text: String, title: String = "Share") {
-    val i = Intent(Intent.ACTION_SEND).apply { type = "text/plain"; putExtra(Intent.EXTRA_TEXT, text) }
-    context.startActivity(Intent.createChooser(i, title))
-}
-
-// --- app host --------------------------------------------------------------
-
+/** Drawer host + section switch. One shared drawer, exactly like PocketPal. */
 @Composable
 fun AppRoot(vm: ChatViewModel = viewModel()) {
-    val context = LocalContext.current
-    val state by vm.state.collectAsState()
     var section by remember { mutableStateOf(Section.CHAT) }
-    val drawer = rememberDrawerState(DrawerValue.Closed)
+    val drawerState = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-
-    LaunchedEffect(Unit) {
-        VoiceIO.init(context)
-        // Debug hook: allow headless model load for crash capture (am start ... --es model PATH --ei ngl 99).
-        val intent = (context as? Activity)?.intent
-        val dbg = intent?.getStringExtra("model")
-        if (dbg != null) vm.debugLoad(dbg, intent.getIntExtra("ngl", 0), intent.getIntExtra("ctx", 4096))
-    }
+    val open: () -> Unit = { scope.launch { drawerState.open() } }
 
     ModalNavigationDrawer(
-        drawerState = drawer,
+        drawerState = drawerState,
         drawerContent = {
             ModalDrawerSheet {
-                Text("Hermes Llama", style = MaterialTheme.typography.titleLarge,
-                    modifier = Modifier.padding(16.dp))
-                HorizontalDivider()
-                val go: (Section) -> Unit = { s -> section = s; scope.launch { drawer.close() } }
-                NavigationDrawerItem(label = { Text("New chat") }, selected = false,
-                    onClick = { vm.newChat(); go(Section.CHAT) },
-                    icon = { Icon(Icons.Default.Add, null) }, modifier = Modifier.padding(6.dp))
-                NavigationDrawerItem(label = { Text("Chats") }, selected = section == Section.CHATS,
-                    onClick = { go(Section.CHATS) },
-                    icon = { Icon(Icons.Default.MoreVert, null) }, modifier = Modifier.padding(6.dp))
-                NavigationDrawerItem(label = { Text("Models") }, selected = section == Section.MODELS,
-                    onClick = { go(Section.MODELS) },
-                    icon = { Icon(Icons.Default.Settings, null) }, modifier = Modifier.padding(6.dp))
-                NavigationDrawerItem(label = { Text("HuggingFace") }, selected = section == Section.HUGGINGFACE,
-                    onClick = { go(Section.HUGGINGFACE) },
-                    icon = { Icon(Icons.Default.Refresh, null) }, modifier = Modifier.padding(6.dp))
-                NavigationDrawerItem(label = { Text("Providers") }, selected = section == Section.PROVIDERS,
-                    onClick = { go(Section.PROVIDERS) },
-                    icon = { Icon(Icons.Default.Share, null) }, modifier = Modifier.padding(6.dp))
-                NavigationDrawerItem(label = { Text("Settings") }, selected = section == Section.SETTINGS,
-                    onClick = { go(Section.SETTINGS) },
-                    icon = { Icon(Icons.Default.Settings, null) }, modifier = Modifier.padding(6.dp))
                 Spacer(Modifier.height(12.dp))
-                Text(state.status, style = MaterialTheme.typography.labelSmall,
-                    modifier = Modifier.padding(horizontal = 16.dp))
+                Text(
+                    "Hermes Llama",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.SemiBold,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
+                )
+                HorizontalDivider()
+                Spacer(Modifier.height(8.dp))
+                Section.values().forEach { s ->
+                    NavigationDrawerItem(
+                        icon = { Icon(s.icon, null) },
+                        label = { Text(s.label) },
+                        selected = s == section,
+                        onClick = {
+                            section = s
+                            scope.launch { drawerState.close() }
+                        },
+                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding)
+                    )
+                }
             }
         }
     ) {
         when (section) {
-            Section.CHAT -> ChatScreen(vm, onMenu = { scope.launch { drawer.open() } },
-                onNewChat = { vm.newChat() }, onOpenChats = { section = Section.CHATS })
-            Section.CHATS -> ChatsScreen(vm, onMenu = { scope.launch { drawer.open() } },
-                onOpen = { id -> vm.selectChat(id); section = Section.CHAT })
-            Section.MODELS -> ModelsScreen(vm, onMenu = { scope.launch { drawer.open() } })
-            Section.HUGGINGFACE -> HuggingFaceScreen(vm, onMenu = { scope.launch { drawer.open() } })
-            Section.PROVIDERS -> ProvidersScreen(vm, onMenu = { scope.launch { drawer.open() } })
-            Section.SETTINGS -> SettingsScreen(vm, onMenu = { scope.launch { drawer.open() } })
+            Section.CHAT -> ChatScreen(vm, onMenu = open, onOpenModels = { section = Section.MODELS })
+            Section.CHATS -> ChatsScreen(vm, onMenu = open, onOpen = { section = Section.CHAT })
+            Section.MODELS -> ModelsScreen(vm, onMenu = open, onFindMore = { section = Section.HUGGINGFACE })
+            Section.HUGGINGFACE -> HuggingFaceScreen(vm, onMenu = open)
+            Section.PROVIDERS -> ProvidersScreen(vm, onMenu = open)
+            Section.SETTINGS -> SettingsScreen(vm, onMenu = open)
+            Section.INFO -> InfoScreen(onMenu = open)
         }
     }
 }
 
-// --- chat ------------------------------------------------------------------
+// --- chat -------------------------------------------------------------------
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onNewChat: () -> Unit, onOpenChats: () -> Unit) {
+fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onOpenModels: () -> Unit) {
     val state by vm.state.collectAsState()
     val context = LocalContext.current
     var input by remember { mutableStateOf("") }
-    var menuOpen by remember { mutableStateOf(false) }
-    var editIndex by remember { mutableStateOf(-1) }
+    var editIndex by remember { mutableStateOf<Int?>(null) }
     var editText by remember { mutableStateOf("") }
     val listState = rememberLazyListState()
+    val msgs = state.current?.messages ?: emptyList()
 
-    val filePicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
-        uri?.let { materialise(context, it, "media")?.let { p -> vm.setAttachment(p, false) } }
+    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri != null) copyUriToTemp(context, uri)?.let { vm.setAttachment(it, false) }
     }
-    val imagePicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { materialise(context, it, "media")?.let { p -> vm.setAttachment(p, false) } }
-    }
-    val audioPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri ->
-        uri?.let { materialise(context, it, "media")?.let { p -> vm.setAttachment(p, true) } }
-    }
-    val stt = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
-        VoiceIO.parseStt(res.data)?.let { input = if (input.isBlank()) it else "$input $it" }
+    val voiceInput = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { res ->
+        VoiceIO.parseStt(res.data)?.let { input = it }
     }
 
-    val messages = state.current?.messages ?: emptyList()
-    LaunchedEffect(messages.size, state.streaming) {
-        val target = messages.size + if (state.streaming.isNotEmpty()) 1 else 0
-        if (target > 0) listState.animateScrollToItem(target - 1)
+    LaunchedEffect(msgs.size, state.streaming, state.busy) {
+        val count = msgs.size + if (state.busy) 1 else 0
+        if (count > 0) runCatching { listState.animateScrollToItem(count - 1) }
     }
 
-    if (editIndex >= 0) {
+    editIndex?.let { idx ->
         AlertDialog(
-            onDismissRequest = { editIndex = -1 },
-            title = { Text("Edit message") },
-            text = { OutlinedTextField(value = editText, onValueChange = { editText = it }, modifier = Modifier.fillMaxWidth()) },
-            confirmButton = { TextButton(onClick = { vm.editAndResend(editIndex, editText); editIndex = -1 }) { Text("Resend") } },
-            dismissButton = { TextButton(onClick = { editIndex = -1 }) { Text("Cancel") } }
+            onDismissRequest = { editIndex = null },
+            title = { Text("Edit & resend") },
+            text = {
+                OutlinedTextField(
+                    value = editText, onValueChange = { editText = it },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { vm.editAndResend(idx, editText); editIndex = null }) { Text("Send") }
+            },
+            dismissButton = { TextButton(onClick = { editIndex = null }) { Text("Cancel") } }
         )
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                navigationIcon = { IconButton(onClick = onMenu) { Icon(Icons.Default.Menu, "Menu") } },
-                title = { Text(state.current?.title ?: "Hermes Llama", maxLines = 1) },
+                navigationIcon = {
+                    IconButton(onClick = onMenu) { Icon(Icons.Default.Menu, "Open drawer") }
+                },
+                title = { Text("Chat") },
                 actions = {
-                    IconButton(onClick = onNewChat) { Icon(Icons.Default.Add, "New chat") }
-                    IconButton(onClick = { menuOpen = true }) { Icon(Icons.Default.MoreVert, "More") }
-                    DropdownMenu(expanded = menuOpen, onDismissRequest = { menuOpen = false }) {
-                        DropdownMenuItem(text = { Text("Chat history") }, onClick = { menuOpen = false; onOpenChats() }) { Icon(Icons.Default.MoreVert, null) }
-                        DropdownMenuItem(text = { Text("Share conversation") }, onClick = {
-                            menuOpen = false; shareText(context, vm.exportCurrent(), "Share conversation")
-                        }) { Icon(Icons.Default.Share, null) }
-                        DropdownMenuItem(text = { Text("Rename chat") }, onClick = {
-                            menuOpen = false
-                            state.current?.let { c ->
-                                editText = c.title; editIndex = -2
-                            }
-                        }) { Icon(Icons.Default.Edit, null) }
+                    IconButton(onClick = { vm.setThinking(!state.thinking) }) {
+                        Icon(
+                            Icons.Default.Psychology, "Thinking",
+                            tint = if (state.thinking) MaterialTheme.colorScheme.primary else LocalContentColor.current
+                        )
+                    }
+                    IconButton(onClick = { vm.setWebSearch(!state.webSearch) }) {
+                        Icon(
+                            Icons.Default.Public, "Web search",
+                            tint = if (state.webSearch) MaterialTheme.colorScheme.primary else LocalContentColor.current
+                        )
+                    }
+                    if (state.busy) {
+                        IconButton(onClick = { vm.stop() }) { Icon(Icons.Default.Stop, "Stop") }
                     }
                 }
             )
         },
         bottomBar = {
-            Surface(tonalElevation = 3.dp) {
-                Column {
-                    // toggles row
-                    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                        FilterChip(selected = state.thinking, onClick = { vm.setThinking(!state.thinking) },
-                            label = { Text("Thinking", style = MaterialTheme.typography.labelSmall) })
-                        Spacer(Modifier.width(6.dp))
-                        FilterChip(selected = state.webSearch, onClick = { vm.setWebSearch(!state.webSearch) },
-                            label = { Text("Web search", style = MaterialTheme.typography.labelSmall) })
-                    }
-                    state.attachment?.let { p ->
-                        Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp), verticalAlignment = Alignment.CenterVertically) {
-                            Text("Attached: ${p.substringAfterLast('/')}", Modifier.weight(1f), style = MaterialTheme.typography.labelSmall)
-                            IconButton(onClick = { vm.clearAttachment() }) { Icon(Icons.Default.Clear, "Remove") }
+            if (state.currentModelId != null) {
+                Composer(
+                    value = input,
+                    onChange = { input = it },
+                    attachment = state.attachment,
+                    busy = state.busy,
+                    onAttachImage = { imagePicker.launch("image/*") },
+                    onClearAttachment = { vm.clearAttachment() },
+                    onVoice = { voiceInput.launch(VoiceIO.sttIntent()) },
+                    onTts = {
+                        val last = msgs.lastOrNull { it.role == "assistant" }?.content
+                        if (last != null) { VoiceIO.init(context); VoiceIO.speak(last) }
+                    },
+                    onSend = {
+                        val text = input.trim()
+                        if (text.isNotEmpty() || state.attachment != null) {
+                            vm.send(text, state.attachment)
+                            input = ""
                         }
                     }
-                    Row(Modifier.fillMaxWidth().padding(8.dp).navigationBarsPadding(), verticalAlignment = Alignment.CenterVertically) {
-                        IconButton(onClick = { filePicker.launch(arrayOf("*/*")) }) { Icon(Icons.Default.AttachFile, "Attach file") }
-                        IconButton(onClick = { imagePicker.launch("image/*") }) { Icon(Icons.Default.Add, "Attach image") }
-                        IconButton(onClick = { stt.launch(VoiceIO.sttIntent()) }) { Icon(Icons.Default.Mic, "Voice input") }
-                        OutlinedTextField(
-                            value = input, onValueChange = { input = it }, modifier = Modifier.weight(1f),
-                            placeholder = { Text("Message…") }, maxLines = 4,
-                            enabled = state.preset != null && !state.busy
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        if (state.busy) {
-                            IconButton(onClick = { vm.stop() }) { Icon(Icons.Default.Stop, "Stop") }
-                        } else {
-                            IconButton(
-                                onClick = { vm.send(input, state.attachment); input = "" },
-                                enabled = state.preset != null && (input.isNotBlank() || state.attachment != null)
-                            ) { Icon(Icons.Default.Send, "Send") }
-                        }
-                    }
-                }
+                )
             }
         }
-    ) { padding ->
-        Column(Modifier.padding(padding).fillMaxSize()) {
-            Surface(tonalElevation = 1.dp, modifier = Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(10.dp)) {
-                    Text(state.status, style = MaterialTheme.typography.bodySmall)
-                    if (state.modelInfo.isNotBlank()) Text(state.modelInfo, style = MaterialTheme.typography.labelSmall)
+    ) { pad ->
+        Box(Modifier.padding(pad).fillMaxSize()) {
+            when {
+                state.currentModelId == null -> EmptyModels(onOpenModels)
+                msgs.isEmpty() && !state.busy -> Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("Start chatting — type below.", style = MaterialTheme.typography.bodyMedium)
                 }
-            }
-            LazyColumn(
-                state = listState,
-                modifier = Modifier.weight(1f).fillMaxWidth(),
-                contentPadding = PaddingValues(12.dp),
-                verticalArrangement = Arrangement.spacedBy(8.dp)
-            ) {
-                itemsIndexed(messages) { idx, msg ->
-                    MessageBubble(
-                        msg = msg, thinking = state.thinking,
-                        onCopy = { copyToClipboard(context, msg.content) },
-                        onSpeak = { VoiceIO.speak(msg.content) },
-                        onEdit = { if (msg.role == "user") { editText = msg.content; editIndex = idx } },
-                        onRetry = { vm.regenerate() },
-                        onDelete = { vm.deleteMessage(idx) }
-                    )
-                }
-                if (state.streaming.isNotEmpty()) {
-                    item { MessageBubble(Msg("assistant", state.streaming), state.thinking, {}, {}, {}, {}, {}) }
-                }
-                if (messages.isEmpty()) {
-                    item { Text("Pick a model on the Models page, then chat. Use Web search for live info.", Modifier.padding(16.dp)) }
+                else -> LazyColumn(
+                    state = listState,
+                    modifier = Modifier.fillMaxSize(),
+                    contentPadding = PaddingValues(12.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    itemsIndexed(msgs) { i, m ->
+                        MessageBubble(m) { editIndex = i; editText = m.content }
+                    }
+                    if (state.busy) item { TypingBubble(state.streaming) }
                 }
             }
         }
@@ -284,59 +227,154 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onNewChat: () -> Unit, onO
 }
 
 @Composable
-private fun MessageBubble(
-    msg: Msg, thinking: Boolean,
-    onCopy: () -> Unit, onSpeak: () -> Unit, onEdit: () -> Unit, onRetry: () -> Unit, onDelete: () -> Unit
+private fun EmptyModels(onOpenModels: () -> Unit) {
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Text("No Models Available", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
+        Spacer(Modifier.height(8.dp))
+        Text(
+            "Download a model to start chatting with Hermes Llama",
+            style = MaterialTheme.typography.bodyMedium,
+            textAlign = TextAlign.Center,
+            color = MaterialTheme.colorScheme.onSurfaceVariant
+        )
+        Spacer(Modifier.height(20.dp))
+        Button(onClick = onOpenModels, modifier = Modifier.fillMaxWidth()) { Text("Download Model") }
+    }
+}
+
+@Composable
+private fun MessageBubble(m: Msg, onEdit: () -> Unit) {
+    val isUser = m.role == "user"
+    Column(
+        Modifier.fillMaxWidth(),
+        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
+    ) {
+        Surface(
+            color = if (isUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.widthIn(max = 320.dp)
+        ) {
+            Text(m.content, modifier = Modifier.padding(10.dp), style = MaterialTheme.typography.bodyMedium)
+        }
+        if (isUser) {
+            TextButton(onClick = onEdit) { Text("Edit", style = MaterialTheme.typography.labelSmall) }
+        }
+    }
+}
+
+@Composable
+private fun TypingBubble(streaming: String) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.Start) {
+        Surface(
+            color = MaterialTheme.colorScheme.surfaceVariant,
+            shape = RoundedCornerShape(14.dp),
+            modifier = Modifier.widthIn(max = 320.dp)
+        ) {
+            Text(
+                if (streaming.isBlank()) "…" else streaming,
+                modifier = Modifier.padding(10.dp), style = MaterialTheme.typography.bodyMedium
+            )
+        }
+    }
+}
+
+@Composable
+private fun Composer(
+    value: String,
+    onChange: (String) -> Unit,
+    attachment: String?,
+    busy: Boolean,
+    onAttachImage: () -> Unit,
+    onClearAttachment: () -> Unit,
+    onVoice: () -> Unit,
+    onTts: () -> Unit,
+    onSend: () -> Unit
 ) {
-    val isUser = msg.role == "user"
-    var menu by remember { mutableStateOf(false) }
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start) {
-        val parsed = if (!isUser) splitThinking(msg.content) else ("" to msg.content)
-        val showTrace = !isUser && thinking && hasThinking(msg.content)
-        Box {
-            Surface(
-                color = if (isUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-                shape = RoundedCornerShape(12.dp),
-                modifier = Modifier.widthIn(max = 320.dp)
-            ) {
-                Column(Modifier.padding(10.dp)) {
-                    if (showTrace && parsed.first.isNotEmpty()) {
-                        Text("reasoning", style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
-                        Text(parsed.first, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
-                        Spacer(Modifier.height(6.dp))
-                    }
-                    Text((if (showTrace) parsed.second else msg.content).ifEmpty { "…" },
-                        style = MaterialTheme.typography.bodyMedium)
+    Surface(tonalElevation = 3.dp) {
+        Column(Modifier.fillMaxWidth().padding(8.dp)) {
+            if (attachment != null) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Image, null, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Image attached", style = MaterialTheme.typography.labelSmall, modifier = Modifier.weight(1f))
+                    IconButton(onClick = onClearAttachment) { Icon(Icons.Default.Close, "Remove attachment") }
                 }
             }
-            // Long-press handled via the trailing "more" affordance under each bubble.
-            IconButton(onClick = { menu = true }, modifier = Modifier.align(Alignment.BottomEnd).size(28.dp)) {
-                Icon(Icons.Default.MoreVert, "Message actions", modifier = Modifier.size(16.dp))
-            }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(text = { Text("Copy") }, onClick = { menu = false; onCopy() }) { Icon(Icons.Default.ContentCopy, null) }
-                DropdownMenuItem(text = { Text("Read aloud") }, onClick = { menu = false; onSpeak() }) { Icon(Icons.Default.VolumeUp, null) }
-                if (isUser) DropdownMenuItem(text = { Text("Edit & resend") }, onClick = { menu = false; onEdit() }) { Icon(Icons.Default.Edit, null) }
-                if (!isUser) DropdownMenuItem(text = { Text("Retry") }, onClick = { menu = false; onRetry() }) { Icon(Icons.Default.Refresh, null) }
-                DropdownMenuItem(text = { Text("Delete") }, onClick = { menu = false; onDelete() }) { Icon(Icons.Default.Delete, null) }
+            OutlinedTextField(
+                value = value,
+                onValueChange = onChange,
+                placeholder = { Text("Message input") },
+                modifier = Modifier.fillMaxWidth(),
+                maxLines = 5
+            )
+            Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                IconButton(onClick = onAttachImage) { Icon(Icons.Default.Image, "Add image") }
+                IconButton(onClick = onVoice) { Icon(Icons.Default.Mic, "Voice input") }
+                IconButton(onClick = onTts) { Icon(Icons.Default.VolumeUp, "TTS settings") }
+                Spacer(Modifier.weight(1f))
+                FilledIconButton(onClick = onSend, enabled = !busy) { Icon(Icons.Default.Send, "Send") }
             }
         }
     }
 }
 
-// --- thinking-tag helpers (escapes keep the source tag-safe) ----------------
+// --- app info ---------------------------------------------------------------
 
-private const val THINK_OPEN = "\u003Cthink\u003E"
-private const val THINK_CLOSE = "\u003C/think\u003E"
-
-fun hasThinking(content: String): Boolean =
-    content.contains(THINK_OPEN) || content.contains(THINK_CLOSE)
-
-fun splitThinking(content: String): Pair<String, String> {
-    val hasOpen = content.contains(THINK_OPEN)
-    val hasClose = content.contains(THINK_CLOSE)
-    val afterOpen = if (hasOpen) content.substringAfter(THINK_OPEN) else content
-    val trace = afterOpen.substringBefore(THINK_CLOSE).trim()
-    val answer = if (hasClose) afterOpen.substringAfter(THINK_CLOSE).trim() else ""
-    return trace to answer
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun InfoScreen(onMenu: () -> Unit) {
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                navigationIcon = { IconButton(onClick = onMenu) { Icon(Icons.Default.Menu, "Open drawer") } },
+                title = { Text("App Info") }
+            )
+        }
+    ) { pad ->
+        Column(
+            Modifier.padding(pad).padding(16.dp).fillMaxSize(),
+            verticalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Hermes Llama", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
+            Text(
+                "Local GGUF inference with an OpenAI-compatible server.",
+                style = MaterialTheme.typography.bodyMedium
+            )
+            Spacer(Modifier.height(8.dp))
+            Text("Beyond PocketPal", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
+            listOf(
+                "HuggingFace in-app download portal",
+                "BYOK cloud providers, unlimited keys",
+                "Embedded OpenAI-compatible server",
+                "mmproj library with auto-pairing",
+                "Built-in web search grounding",
+                "Multi-chat history with pin/rename/share"
+            ).forEach { Text("- $it", style = MaterialTheme.typography.bodyMedium) }
+        }
+    }
 }
+
+// --- shared helpers ---------------------------------------------------------
+
+/** Share a conversation transcript through the system chooser. */
+fun shareText(context: Context, text: String, title: String) {
+    val send = Intent(Intent.ACTION_SEND).apply {
+        type = "text/plain"
+        putExtra(Intent.EXTRA_SUBJECT, title)
+        putExtra(Intent.EXTRA_TEXT, text)
+    }
+    context.startActivity(Intent.createChooser(send, "Share conversation"))
+}
+
+/** Copy a picked content Uri into a cache file the native mtmd path can read. */
+private fun copyUriToTemp(context: Context, uri: Uri): String? = runCatching {
+    val f = File(context.cacheDir, "attach_${System.currentTimeMillis()}.jpg")
+    context.contentResolver.openInputStream(uri)!!.use { input ->
+        f.outputStream().use { output -> input.copyTo(output) }
+    }
+    f.absolutePath
+}.getOrNull()

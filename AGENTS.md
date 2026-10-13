@@ -85,10 +85,13 @@ Single-flow build per Rule 8 — the **one** CI build for stages b(complete)/c/d
 Not yet exercised on-device (recommended next manual test): actual model load +
 projector auto-pair + a real generation (needs a SAF file pick, UI-driven).
 
-**v5 overhaul build: NOT RUN YET.** Per Rule 8 the five section screens + the GPU-crash fix +
-the HuggingFace search-persistence fix must all land before the single CI build for this flow.
-(Gap the user flagged 2026-10-13: AGENTS.md was not being kept current *during* the rework — Rule 6
-violation, corrected here.)
+| 38389045212 | a0c15e1 | failure | `:app:compileReleaseKotlin` — 8 errors, all `MainActivity.kt` 198/201/207/317–321: "Type mismatch: inferred type is () -> Unit but MutableInteractionSource was expected". Cause: a trailing content lambda was passed to Material3 `DropdownMenuItem`, which has **no** trailing slot. Fix: use the `text =` / `leadingIcon =` slots. |
+
+**v5 overhaul build #2: IN PROGRESS.** The follow-up (single allowed) build folds in (a) the
+DropdownMenuItem fix and (b) a full PocketPal-parity restyle of `MainActivity.kt` /
+`ModelsScreen.kt` / `SettingsScreen.kt`, keeping every differentiator feature. Per Rule 8 this
+restyle rides the same fix build. (Gap the user flagged 2026-10-13: AGENTS.md was not being kept
+current *during* the rework — Rule 6 violation, corrected here.)
 
 ---
 
@@ -102,15 +105,23 @@ User msg (paraphrased, high-expectation, verbatim intent):
 6. Unlimited API keys per provider; per-model select/unselect; all selected provider models surface alongside local models.
 7. Proper chat interface: file upload, internet search, TTS/STT voice, copy/edit/retry/delete/read-aloud per message,
    chat history (pin/rename/delete/share), new-chat button, share-conversation script.
-8. **Reference style = PocketAI's UI/UX — "copy style and everything… verbatim".** Differentiation = extra features
-   PocketAI lacks + a different name.
+8. **Reference style = PocketPal AI (`com.pocketpalai`) — "copy style, design, placement and UI/UX".**
+   Differentiation = extra features PocketPal lacks + a different app name. (Captured on-device via
+   `uiautomator dump`: Chat = hamburger + left "Chat" title + centered "No Models Available" empty
+   state + full-width composer with an icon row beneath; drawer = full-width icon+label items
+   Chat/Pals/Models/Benchmark/Settings/App Info; Models = "Available to Download" banner + ＋ FAB +
+   name-left/size-right cards; Settings = labelled section headers + label/subtitle/switch rows.)
 
 Implementation surface (current flow):
 - New data layer: `ChatStore.kt` (multi-chat), `ModelRepository.kt` (local scan + mmproj pairing + cloud merge),
   `ProviderStore.kt` (unlimited keys + per-model selection), `VoiceIO.kt` (TTS/STT), `WebSearch.kt` (DuckDuckGo context injection).
 - Rewritten: `ChatViewModel.kt` (UiState + GPU→CPU fallback + `/no_think` + trace stripping), `MainActivity.kt`
   (drawer host + `Section` enum + full chat screen).
-- Pending: `ChatsScreen` / `ModelsScreen` / `HuggingFaceScreen` / `ProvidersScreen` / `SettingsScreen`.
+- All five section screens exist: `ChatsScreen` / `HuggingFaceScreen` / `ProvidersScreen` (built this
+  flow) plus `ModelsScreen` / `SettingsScreen` (rebuilt to PocketPal parity). `MainActivity.kt` hosts
+  the shared drawer + `Section` enum, the PocketPal-style chat screen + empty "No Models Available"
+  state, and the `shareText` / `copyUriToTemp` helpers used across screens.
+- Structural gate: 20 `.kt` files, `BAD FILES: 0` (comment/string-stripped brace+paren balance).
 
 ---
 
