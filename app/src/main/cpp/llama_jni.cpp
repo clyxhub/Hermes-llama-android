@@ -130,6 +130,13 @@ Java_com_hermes_llama_LlamaBridge_nativeLoadModel(
     llama_model_params mparams = llama_model_default_params();
     // Stage (b): honour the GPU-layers request. 0 = CPU only; a large value
     // (e.g. 99) offloads every layer the Vulkan backend can hold.
+    // HERMES-PATCH(gpu-guard): never request GPU offload this build cannot do.
+    // If no GPU backend registered (or the driver is absent), force CPU rather
+    // than letting llama.cpp pick a bogus device.
+    if (nGpuLayers > 0 && !llama_supports_gpu_offload()) {
+        LOGI("HERMES: GPU offload requested but unsupported — forcing CPU");
+        nGpuLayers = 0;
+    }
     mparams.n_gpu_layers = nGpuLayers < 0 ? 0 : nGpuLayers;
 
     // HERMES-PATCH(cpu-only-devices): when GPU offload is disabled, restrict the

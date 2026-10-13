@@ -33,6 +33,13 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
 | 2026-10-13 | Auto-tuner: topology heuristic + first-measured tok/s, NOT the full multi-reload benchmark | N model reloads on 1–3 GB GGUFs cost RAM/time; adjacent thread counts differ marginally |
 | 2026-10-13 | Chain-of-thought delimiters stored as `\u003C…\u003E` unicode escapes in source | literal tags are silently stripped by the tooling pipeline |
 | 2026-10-13 | Embedded server: hand-rolled `HttpURLConnection`/`ServerSocket`, no 3rd-party dep | keeps the dependency set unchanged (no new Gradle deps) |
+| 2026-10-13 | **v5 UX overhaul**: adopt PocketAI's UI/UX as the reference style ("copy style and everything… verbatim"); differentiate via extra features + a different name | user instruction |
+| 2026-10-13 | Navigation = multi-section drawer (Chat / Chats / Models / HuggingFace / Providers / Settings); HuggingFace is its OWN section, not a sub-tab | user: "huggingface page should be in a different section" |
+| 2026-10-13 | Unlimited API keys per provider + per-model select/unselect; selected provider models surface in the Models page alongside local GGUFs | user: "unlimited api keys… per model select" |
+| 2026-10-13 | Every local GGUF is auto-paired to its mmproj and loaded from the Models page (no repeated file picker) | user: "model has no pair option for mproj"; "all on-device models… selectable to load" |
+| 2026-10-13 | Thinking OFF ⇒ append `/no_think` to the final user turn AND strip any emitted reasoning trace from the reply | user: "model is thinking anyways regardless if thinking mode is on or off" |
+| 2026-10-13 | HuggingFace search state is hoisted OUT of the composable so it survives navigating away | user: "searches doesn't erase" (search content was being cleared) |
+| 2026-10-13 | Multi-chat persistence moved to `ChatStore` (prefs key `chats_v2`) replacing the single-history blob | proper chat history (pin/rename/delete/share) |
 
 ---
 
@@ -49,6 +56,7 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
 | g QNN NPU flavor | SKIPPED (optional) | | Qualcomm-only, licensing risk |
 | h Model sources A/B/C | DONE | this flow | A local import (SAF); B `HuggingFaceClient.kt` (search / file list / resumable download); C `CloudEngine.kt` + `CloudProviders` (12 BYOK providers) |
 | quick wins (off-plan) | DONE | a9a4fba, ef550f6 | auto-load model, tok/s, chat history, clear button |
+| v5 UI/UX overhaul (PocketAI-parity) | IN PROGRESS | (uncommitted) | multi-section drawer; new data layer `ChatStore`/`ModelRepository`/`ProviderStore`/`VoiceIO`/`WebSearch`; rewritten `ChatViewModel`+`MainActivity`; pending: `ChatsScreen`/`ModelsScreen`/`HuggingFaceScreen`/`ProvidersScreen`/`SettingsScreen`, GPU-crash fix, single CI build |
 
 ## DEVIATIONS (work outside plan order)
 - Auto-load last model + tok/s readout (`a9a4fba`) — not a plan stage
@@ -59,6 +67,11 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
   angle brackets, because literal tags are stripped by the tooling pipeline (caused an earlier empty-literal bug).
 - `LocalServer` implements `/props` and `/tokenize` plus the OpenAI surface, but not
   `/detokenize` or `/v1/embeddings` yet (declared in §5) — deferred.
+- **v5 (PocketAI-parity UX):** the whole UI/UX is being reworked to match PocketAI's look-and-feel
+  per user instruction, differentiation ONLY via extra features + app name. Supersedes the stage-(a)
+  single-screen UI; tracked as the "v5 UI/UX overhaul" row above.
+- Storage layer: chats / models / provider-keys still use `SharedPreferences` JSON (not Room, as
+  §1/§13 propose). Rationale: zero new Gradle deps; revisit if/when the schema outgrows JSON.
 
 ---
 
@@ -71,6 +84,33 @@ Single-flow build per Rule 8 — the **one** CI build for stages b(complete)/c/d
 
 Not yet exercised on-device (recommended next manual test): actual model load +
 projector auto-pair + a real generation (needs a SAF file pick, UI-driven).
+
+**v5 overhaul build: NOT RUN YET.** Per Rule 8 the five section screens + the GPU-crash fix +
+the HuggingFace search-persistence fix must all land before the single CI build for this flow.
+(Gap the user flagged 2026-10-13: AGENTS.md was not being kept current *during* the rework — Rule 6
+violation, corrected here.)
+
+---
+
+## v5 UX OVERHAUL — user requirements (source of truth for the current flow)
+User msg (paraphrased, high-expectation, verbatim intent):
+1. GPU ON crashes the app — must not crash; degrade safely.
+2. Model has no explicit mmproj pair option.
+3. Model "thinks" regardless of thinking mode on/off.
+4. HuggingFace must be its OWN section; search content must persist (not be erased); needs a real download section.
+5. All on-device models must appear in an in-app Models page WITH their mproj, selectable to load (no repeated file picker).
+6. Unlimited API keys per provider; per-model select/unselect; all selected provider models surface alongside local models.
+7. Proper chat interface: file upload, internet search, TTS/STT voice, copy/edit/retry/delete/read-aloud per message,
+   chat history (pin/rename/delete/share), new-chat button, share-conversation script.
+8. **Reference style = PocketAI's UI/UX — "copy style and everything… verbatim".** Differentiation = extra features
+   PocketAI lacks + a different name.
+
+Implementation surface (current flow):
+- New data layer: `ChatStore.kt` (multi-chat), `ModelRepository.kt` (local scan + mmproj pairing + cloud merge),
+  `ProviderStore.kt` (unlimited keys + per-model selection), `VoiceIO.kt` (TTS/STT), `WebSearch.kt` (DuckDuckGo context injection).
+- Rewritten: `ChatViewModel.kt` (UiState + GPU→CPU fallback + `/no_think` + trace stripping), `MainActivity.kt`
+  (drawer host + `Section` enum + full chat screen).
+- Pending: `ChatsScreen` / `ModelsScreen` / `HuggingFaceScreen` / `ProvidersScreen` / `SettingsScreen`.
 
 ---
 
