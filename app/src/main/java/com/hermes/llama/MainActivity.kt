@@ -124,6 +124,7 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onOpenModels: () -> Unit) 
     var input by remember { mutableStateOf("") }
     var editIndex by remember { mutableStateOf<Int?>(null) }
     var editText by remember { mutableStateOf("") }
+    var viewing by remember { mutableStateOf<Artifact?>(null) }
     val listState = rememberLazyListState()
     val msgs = state.current?.messages ?: emptyList()
     val caps = state.capabilities
@@ -223,13 +224,21 @@ fun ChatScreen(vm: ChatViewModel, onMenu: () -> Unit, onOpenModels: () -> Unit) 
                             onRetry = { vm.retryAt(i) },
                             onDelete = { vm.deleteMessage(i) },
                             onCopy = { clipboard.setText(AnnotatedString(m.content)) },
-                            onSpeak = { VoiceIO.init(context); VoiceIO.speak(m.content) }
+                            onSpeak = { VoiceIO.init(context); VoiceIO.speak(m.content) },
+                            onOpenArtifact = { a -> vm.materializeArtifact(a); viewing = a }
                         )
                     }
                     if (state.busy) item { TypingBubble(state.streaming) }
                 }
             }
         }
+    }
+    viewing?.let { a ->
+        ArtifactViewerDialog(
+            a = a,
+            onDismiss = { viewing = null },
+            onDownload = { vm.downloadArtifact(it) }
+        )
     }
 }
 
@@ -260,53 +269,65 @@ private fun MessageBubble(
     onRetry: () -> Unit,
     onDelete: () -> Unit,
     onCopy: () -> Unit,
-    onSpeak: () -> Unit
+    onSpeak: () -> Unit,
+    onOpenArtifact: (Artifact) -> Unit
 ) {
     val isUser = m.role == "user"
     var menu by remember { mutableStateOf(false) }
-    Row(
+    Column(
         Modifier.fillMaxWidth(),
-        horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
-        verticalAlignment = Alignment.CenterVertically
+        horizontalAlignment = if (isUser) Alignment.End else Alignment.Start
     ) {
-        Surface(
-            color = if (isUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
-            shape = RoundedCornerShape(14.dp),
-            modifier = Modifier.widthIn(max = 300.dp)
+        Row(
+            Modifier.fillMaxWidth(),
+            horizontalArrangement = if (isUser) Arrangement.End else Arrangement.Start,
+            verticalAlignment = Alignment.CenterVertically
         ) {
-            Text(m.content, modifier = Modifier.padding(10.dp), style = MaterialTheme.typography.bodyMedium)
-        }
-        Box {
-            IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Message actions") }
-            DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
-                DropdownMenuItem(
-                    text = { Text("Copy") },
-                    leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
-                    onClick = { menu = false; onCopy() }
-                )
-                if (isUser) {
+            Surface(
+                color = if (isUser) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                shape = RoundedCornerShape(14.dp),
+                modifier = Modifier.widthIn(max = 300.dp)
+            ) {
+                Text(m.content, modifier = Modifier.padding(10.dp), style = MaterialTheme.typography.bodyMedium)
+            }
+            Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, "Message actions") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                     DropdownMenuItem(
-                        text = { Text("Edit & resend") },
-                        leadingIcon = { Icon(Icons.Default.Edit, null) },
-                        onClick = { menu = false; onEdit() }
+                        text = { Text("Copy") },
+                        leadingIcon = { Icon(Icons.Default.ContentCopy, null) },
+                        onClick = { menu = false; onCopy() }
                     )
-                } else {
+                    if (isUser) {
+                        DropdownMenuItem(
+                            text = { Text("Edit & resend") },
+                            leadingIcon = { Icon(Icons.Default.Edit, null) },
+                            onClick = { menu = false; onEdit() }
+                        )
+                    } else {
+                        DropdownMenuItem(
+                            text = { Text("Retry") },
+                            leadingIcon = { Icon(Icons.Default.Refresh, null) },
+                            onClick = { menu = false; onRetry() }
+                        )
+                    }
                     DropdownMenuItem(
-                        text = { Text("Retry") },
-                        leadingIcon = { Icon(Icons.Default.Refresh, null) },
-                        onClick = { menu = false; onRetry() }
+                        text = { Text("Read aloud") },
+                        leadingIcon = { Icon(Icons.Default.VolumeUp, null) },
+                        onClick = { menu = false; onSpeak() }
+                    )
+                    DropdownMenuItem(
+                        text = { Text("Delete") },
+                        leadingIcon = { Icon(Icons.Default.Delete, null) },
+                        onClick = { menu = false; onDelete() }
                     )
                 }
-                DropdownMenuItem(
-                    text = { Text("Read aloud") },
-                    leadingIcon = { Icon(Icons.Default.VolumeUp, null) },
-                    onClick = { menu = false; onSpeak() }
-                )
-                DropdownMenuItem(
-                    text = { Text("Delete") },
-                    leadingIcon = { Icon(Icons.Default.Delete, null) },
-                    onClick = { menu = false; onDelete() }
-                )
+            }
+        }
+        // Generated files (images, clips, music, HTML, …) shown under the bubble.
+        m.artifacts.forEach { a ->
+            Box(Modifier.widthIn(max = 300.dp)) {
+                ArtifactCard(a = a, onOpen = onOpenArtifact)
             }
         }
     }

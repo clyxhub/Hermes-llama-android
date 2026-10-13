@@ -3,6 +3,7 @@ package com.hermes.llama
 import android.app.Application
 import android.content.Context
 import android.util.Log
+import android.widget.Toast
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -12,6 +13,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import org.json.JSONObject
 
 /** Everything the UI renders. */
 data class UiState(
@@ -352,10 +354,21 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
             val finalText = if (s2.thinking) sb.toString().trim() else scrub(stripThinking(sb.toString()))
             val speed = if (finalText.isNotEmpty()) " · %.1fs".format(elapsed / 1000.0) else ""
 
+            // 14th requirement: pull any generated files (URLs / base64 / data URIs)
+            // out of the reply and materialise them into app storage so they can be
+            // viewed, tested, shared and downloaded — regardless of which model made them.
+            val artifactList: List<Artifact> = runCatching {
+                val raws = mutableListOf<RawArtifact>()
+                raws += ArtifactScanner.fromText(finalText)
+                runCatching { JSONObject(finalText) }.getOrNull()?.let { raws += ArtifactScanner.fromJson(it) }
+                val distinct = raws.distinctBy { it.url ?: it.b64 }
+                if (distinct.isEmpty()) emptyList() else ArtifactStore.materializeAll(getApplication<Application>(), distinct)
+            }.getOrDefault(emptyList())
+
             withContext(Dispatchers.Main) {
                 val c = current()
                 if (c != null) {
-                    c.messages.add(Msg("assistant", finalText))
+                    c.messages.add(Msg("assistant", finalText, artifacts = artifactList))
                     c.updatedAt = System.currentTimeMillis()
                 }
                 save()
@@ -425,6 +438,61 @@ class ChatViewModel(application: Application) : AndroidViewModel(application) {
     fun clearAttachment() = _state.update { it.copy(attachment = null, attachmentIsAudio = false) }
     fun setServer(running: Boolean, port: Int = _state.value.serverPort) = _state.update { it.copy(serverRunning = running, serverPort = port) }
     fun bumpProviderSelection() = _state.update { it.copy(providerSelectionVersion = it.providerSelectionVersion + 1) }
+
+    // --- generated artifacts (any generative model: local or cloud) ----------
+
+    /** Download a remote artifact into app storage and persist the local copy. */
+    fun materializeArtifact(a: Artifact) {
+        if (a.path != null) return
+        viewModelScope.launch(Dispatchers.IO) {
+            val done = ArtifactStore.materialize(getApplication<Application>(), a)
+            withContext(Dispatchers.Main) { replaceArtifact(done) }
+        }
+    }
+
+    /** Export an artifact to the device's public Downloads folder. */
+    fun downloadArtifact(a: Artifact) {
+        val ctx = getApplication<Application>()
+        viewModelScope.launch(Dispatchers.IO) {
+            val local = ArtifactStore.materialize(ctx, a)
+            val ok = ArtifactStore.exportToDownloads(ctx, local)
+            withContext(Dispatchers.Main) {
+                Toast.makeText(
+                    ctx,
+                    if (ok) "Saved " + local.name + " to Downloads" else "Could not save " + a.name,
+                    Toast.LENGTH_SHORT
+                ).show()
+                if (local.path != a.path) replaceArtifact(local)
+            }
+        }
+    }
+
+    /**
+     * Public hook: attach an already-produced file to the active chat. Any local
+     * generator (e.g. a diffusion / music model) or plugin can push bytes here and
+     * the file appears as a viewable / downloadable / testable artifact.
+     */
+    fun addGeneratedFile(name: String, mime: String, bytes: ByteArray, origin: String = "local") {
+        val chat = current() ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            val art = ArtifactStore.saveBytes(getApplication<Application>(), name, mime, bytes, origin)
+            withContext(Dispatchers.Main) {
+                chat.messages.add(Msg("assistant", "Generated " + art.name, artifacts = listOf(art)))
+                chat.updatedAt = System.currentTimeMillis()
+                save(); push()
+            }
+        }
+    }
+
+    /** Swap a stored artifact (same id) in place — used after a download. */
+    private fun replaceArtifact(a: Artifact) {
+        val chat = current() ?: return
+        val idx = chat.messages.indexOfFirst { m -> m.artifacts.any { it.id == a.id } }
+        if (idx < 0) return
+        val m = chat.messages[idx]
+        chat.messages[idx] = m.copy(artifacts = m.artifacts.map { if (it.id == a.id) a else it })
+        save(); push()
+    }
 
     /** Manual GPU layer count (also switches AUTO off). */
     fun setGpuLayers(layers: Int) {

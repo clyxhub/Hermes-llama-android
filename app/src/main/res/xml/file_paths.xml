@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- filesDir/generated : every artifact materialised by ArtifactStore -->
+    <files-path name="generated" path="generated/" />
+    <!-- cache : transient attachments/previews -->
+    <cache-path name="cache" path="." />
+</paths>

@@ -9,7 +9,8 @@ import java.util.UUID
 data class Msg(
     val role: String,
     val content: String,
-    val ts: Long = System.currentTimeMillis()
+    val ts: Long = System.currentTimeMillis(),
+    val artifacts: List<Artifact> = emptyList()
 )
 
 /** A conversation. */
@@ -41,7 +42,24 @@ object ChatStore {
             val ma = o.optJSONArray("messages") ?: JSONArray()
             for (j in 0 until ma.length()) {
                 val m = ma.getJSONObject(j)
-                msgs.add(Msg(m.optString("role"), m.optString("content"), m.optLong("ts")))
+                val arts = mutableListOf<Artifact>()
+                val aa = m.optJSONArray("artifacts") ?: JSONArray()
+                for (k in 0 until aa.length()) {
+                    val ao = aa.getJSONObject(k)
+                    arts.add(
+                        Artifact(
+                            id = ao.optString("id"),
+                            name = ao.optString("name"),
+                            mime = ao.optString("mime", "application/octet-stream"),
+                            kind = ao.optString("kind", "file"),
+                            origin = ao.optString("origin", "cloud"),
+                            url = ao.optString("url").takeIf { it.isNotBlank() },
+                            path = ao.optString("path").takeIf { it.isNotBlank() },
+                            sizeBytes = ao.optLong("size", 0)
+                        )
+                    )
+                }
+                msgs.add(Msg(m.optString("role"), m.optString("content"), m.optLong("ts"), arts))
             }
             out.add(
                 Chat(
@@ -61,7 +79,19 @@ object ChatStore {
         chats.forEach { c ->
             val msgs = JSONArray()
             c.messages.forEach { m ->
-                msgs.put(JSONObject().put("role", m.role).put("content", m.content).put("ts", m.ts))
+                val arts = JSONArray()
+                m.artifacts.forEach { a ->
+                    arts.put(
+                        JSONObject()
+                            .put("id", a.id).put("name", a.name).put("mime", a.mime)
+                            .put("kind", a.kind).put("origin", a.origin)
+                            .put("url", a.url ?: "").put("path", a.path ?: "").put("size", a.sizeBytes)
+                    )
+                }
+                msgs.put(
+                    JSONObject().put("role", m.role).put("content", m.content)
+                        .put("ts", m.ts).put("artifacts", arts)
+                )
             }
             arr.put(
                 JSONObject()

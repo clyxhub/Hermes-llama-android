@@ -42,6 +42,9 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
 | 2026-10-13 | Multi-chat persistence moved to `ChatStore` (prefs key `chats_v2`) replacing the single-history blob | proper chat history (pin/rename/delete/share) |
 | 2026-10-13 | **Live-server model list fixed**: `LocalServer` now holds a multi-model `catalogue` (`data class ModelCard`); it is built from `ModelRepository.all()` (local GGUFs + selected cloud models) and published by `ChatViewModel.refreshModels()` and rebuilt by `ServerService` on start. `GET /v1/models` returns the whole catalogue plus the loaded snapshot (deduped) instead of at most one entry. | user: "the live server is not loading any available models be it local or cloud" |
 | 2026-10-13 | `ModelRepository.rootsFrom(context)` added so non-UI callers (the foreground `ServerService`) resolve the scan roots exactly like the ViewModel | keep the server catalogue and the model library roots identical |
+| 2026-10-13 | `ProviderStore.providersById(context)` — the call in `ModelRepository.cloudEntries()` was missing its `Context` (surfaced by the first real compile: `ModelRepository.kt:128:52 No value passed for parameter 'context'`) | `providersById` is context-taking like every other `ProviderStore` call |
+| 2026-10-13 | **General artifact pipeline** (14th requirement): any generative model — local (e.g. a diffusion image model) or cloud (video/music/whatever) — can hand the app a file of any type; it is materialised to `filesDir/generated`, shown as a card under the assistant bubble, and can be viewed, **tested/interacted with** (HTML → in-app `WebView`), shared, opened, and downloaded to public Downloads | user: "receive, view and download files of anykind from generative models"; "i need to be able to interact with the artifact system e.g. say its an html file and you want to test it" |
+| 2026-10-13 | Artifact pipeline is dependency-free (hand-rolled `ArtifactStore` build/scan/download + `FileProvider`), no new Gradle deps | keeps the dependency set unchanged (consistent with the embedded-server decision) |
 
 ---
 
@@ -59,7 +62,8 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
 | h Model sources A/B/C | DONE | this flow | A local import (SAF); B `HuggingFaceClient.kt` (search / file list / resumable download); C `CloudEngine.kt` + `CloudProviders` (12 BYOK providers) |
 | quick wins (off-plan) | DONE | a9a4fba, ef550f6 | auto-load model, tok/s, chat history, clear button |
 | v5 UI/UX overhaul (PocketAI-parity) | IN PROGRESS | (uncommitted) | multi-section drawer; new data layer `ChatStore`/`ModelRepository`/`ProviderStore`/`VoiceIO`/`WebSearch`; rewritten `ChatViewModel`+`MainActivity`; pending: `ChatsScreen`/`ModelsScreen`/`HuggingFaceScreen`/`ProvidersScreen`/`SettingsScreen`, GPU-crash fix, single CI build |
-| v5 defect batch #2 (13 fixes, incl. live-server model list) | IN PROGRESS | (uncommitted) | folds defect #13 into the same flow: `LocalServer` gains a multi-model catalogue (local GGUFs + selected cloud models) so `GET /v1/models` is never empty; published from `ChatViewModel.refreshModels()` and rebuilt by `ServerService` on start. ONE Rule-8 build for the whole batch. |
+| v5 defect batch #2 (13 fixes, incl. live-server model list) | IN PROGRESS | 8c1231b | folds defect #13 into the same flow: `LocalServer` gains a multi-model catalogue (local GGUFs + selected cloud models) so `GET /v1/models` is never empty; published from `ChatViewModel.refreshModels()` and rebuilt by `ServerService` on start. Build 38401007129 failed on a single missing-`context` error (`ModelRepository.kt:128`); fixed, re-queued together with the 14th requirement. ONE Rule-8 build for the whole batch. |
+| **14th requirement — general artifact pipeline** | IN PROGRESS | (uncommitted) | new `Artifact.kt` (data model + `ArtifactStore` + `ArtifactScanner`) and `ArtifactViewer.kt` (card + interactive viewer: image/audio/video/text inline, HTML **testable in an in-app WebView**); `Msg.artifacts` + `ChatStore` persistence; `ChatViewModel` scans every reply (Markdown/bare URLs, base64 fields, data-URIs) and materialises files into `filesDir/generated`; `MainActivity` renders a card under each assistant bubble + hosts the viewer; `FileProvider` (`@xml/file_paths`) enables share/open; "Save" exports to public Downloads via MediaStore. Folded into the SAME Rule-8 build. |
 
 ## DEVIATIONS (work outside plan order)
 - Auto-load last model + tok/s readout (`a9a4fba`) — not a plan stage
@@ -92,6 +96,8 @@ projector auto-pair + a real generation (needs a SAF file pick, UI-driven).
 
 | 38391843182 | 9df32a6 | success | `:app:compileReleaseKotlin` clean (no errors). APK 72 MB. Unpacked libs: `libggml-vulkan.so` 20.5 MB (`memory budget disabled` marker count **1**), `libmtmd.so` 1.39 MB, `libhermes_llama.so` mtmd occurrences **19**. Installed `pm install -r -d` → Success; `topResumedActivity` = `.MainActivity`; no `FATAL`. App JNI log: `llama backend initialised (gpu_offload_supported=1)` + `system: CPU : NEON = 1 | ARM_FMA = 1 | REPACK = 1`. Live UI dump = PocketPal-style Chat screen: 'Open drawer' desc, 'Chat' title, 'No Models Available', 'Download a model to start chatting with Hermes Llama', 'Download Model', plus our 'Thinking' / 'Web search' toggles. |
 
+| 38401007129 | 8c1231b | failure | `:app:compileReleaseKotlin` — a single error: `ModelRepository.kt:128:52 No value passed for parameter 'context'` (`ProviderStore.providersById()` called without a `Context`). Log recovered from the auto-pushed `ci-diagnostics` branch (`ci-logs/last-build.log`). Fix: `ProviderStore.providersById(context)`. |
+
 **v5 overhaul: DONE.** The single Rule-8 fix+restyle build (38391843182) is green and installed;
 this docs-only tracker update is pushed with `[skip ci]` so it does not consume another build.
 Still needs a GGUF present on-device to exercise a real load + projector auto-pair + MEMBUDGET.
@@ -114,17 +120,22 @@ User msg (paraphrased, high-expectation, verbatim intent):
    state + full-width composer with an icon row beneath; drawer = full-width icon+label items
    Chat/Pals/Models/Benchmark/Settings/App Info; Models = "Available to Download" banner + ＋ FAB +
    name-left/size-right cards; Settings = labelled section headers + label/subtitle/switch rows.)
+14. **General artifact pipeline (added mid-flow):** receive / view / download a file of ANY kind from ANY generative
+    model — local (e.g. a diffusion image model) or cloud (video / music / "whatever file type model") — and be able
+    to **interact** with it (e.g. test an HTML file in an in-app WebView). Model-agnostic: any produced file flows
+    through the same pipeline.
 
 Implementation surface (current flow):
 - New data layer: `ChatStore.kt` (multi-chat), `ModelRepository.kt` (local scan + mmproj pairing + cloud merge),
-  `ProviderStore.kt` (unlimited keys + per-model selection), `VoiceIO.kt` (TTS/STT), `WebSearch.kt` (DuckDuckGo context injection).
+  `ProviderStore.kt` (unlimited keys + per-model selection), `VoiceIO.kt` (TTS/STT), `WebSearch.kt` (DuckDuckGo context injection),
+  `Artifact.kt` + `ArtifactViewer.kt` (general generated-file pipeline: materialise → card → interactive viewer).
 - Rewritten: `ChatViewModel.kt` (UiState + GPU→CPU fallback + `/no_think` + trace stripping), `MainActivity.kt`
   (drawer host + `Section` enum + full chat screen).
 - All five section screens exist: `ChatsScreen` / `HuggingFaceScreen` / `ProvidersScreen` (built this
   flow) plus `ModelsScreen` / `SettingsScreen` (rebuilt to PocketPal parity). `MainActivity.kt` hosts
   the shared drawer + `Section` enum, the PocketPal-style chat screen + empty "No Models Available"
   state, and the `shareText` / `copyUriToTemp` helpers used across screens.
-- Structural gate: 20 `.kt` files, `BAD FILES: 0` (comment/string-stripped brace+paren balance).
+- Structural gate: 22 `.kt` files, `BAD FILES: 0` (comment/string-stripped brace+paren balance).
 
 ---
 

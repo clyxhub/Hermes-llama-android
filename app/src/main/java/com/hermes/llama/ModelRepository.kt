@@ -125,7 +125,7 @@ object ModelRepository {
     fun cloudEntries(context: Context): List<Entry> {
         val sel = ProviderStore.selectedModels(context)
         if (sel.isEmpty()) return emptyList()
-        val providers = ProviderStore.providersById()
+        val providers = ProviderStore.providersById(context)
         return sel.mapNotNull { key ->
             val parts = key.split("::")
             if (parts.size != 2) return@mapNotNull null
