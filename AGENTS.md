@@ -1,47 +1,216 @@
-# AGENTS.md — Hermes Llama (working rules — READ FIRST EVERY SESSION)
+# AGENTS.md — Hermes Llama (`com.hermes.llama`)
 
-> Master spec source of truth: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4)
+**READ THIS FILE FIRST, EVERY SESSION. Never code from memory of the plan.**
+Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full spec embedded below.
 
-## Hard rules
-1. Read this file + STAGE-TRACKER + master spec BEFORE any coding. Never code from memory.
+---
+
+## HARD RULES
+1. Read this file (including the embedded spec) BEFORE writing any code. Never code from memory.
 2. Every commit message references the stage/section it implements.
 3. NO stage skipping or detours without explicit user instruction.
-4. Any work outside plan order goes in DEVIATIONS below — visible, always.
+4. Any work outside plan order goes in DEVIATIONS — visible, always.
 5. Update STAGE-TRACKER after every commit.
-6. **This file is LIVING.** Whenever a decision changes, a new constraint appears, a
-   better approach is found, or the user overrides something — update AGENTS.md in the
-   same commit. Stale AGENTS.md = drift. The file must always reflect current truth.
-7. Record decision changes under DECISIONS LOG below with date + reason, so reversals are
-   traceable instead of silent.
+6. **This file is LIVING.** Any decision change, new constraint, better approach, or user
+   override → update AGENTS.md in the same commit. Stale = drift.
+7. Every decision change is logged in DECISIONS LOG with date + reason.
+8. **BUILD BUDGET (user constraint):** the user has a limited number of GitHub Actions
+   build chances. Do NOT do stage-by-stage APK build+test cycles. Implement all agreed
+   work in ONE flow, then build once. Batch everything into a single push/build.
+   Local dry-run/compile checks first where possible; never spend a CI build to test a
+   trivial increment.
+
+---
 
 ## DECISIONS LOG
 | Date | Decision | Reason |
 |---|---|---|
 | 2026-10-13 | 4B GPU-vs-CPU benchmark skipped | user instruction ("skip 2") |
 | 2026-10-13 | AGENTS.md must be updated whenever decisions change/improve | user instruction |
+| 2026-10-13 | No more stage-by-stage builds; implement remaining stages in ONE flow, single CI build | user has limited GH Actions build budget |
+| 2026-10-13 | Spec must live INSIDE AGENTS.md (not just referenced) | user wants plan always in view |
 
-## Staged plan (from v4 §9)
-- [ ] a. llama.cpp CPU only — working chat UI, CI green
-- [ ] b. Vulkan offload — auto ngl + auto-tuner
-- [ ] c. mmproj capability pipeline — modality-agnostic projector + dynamic input UI
-- [ ] d. HTTP server — OpenAI + native endpoints, foreground service
-- [ ] e. Thinking mode + PresetEngine — auto-presets, reasoning UI
-- [ ] f. Audio modality
-- [ ] g. QNN NPU flavor (optional)
-- [ ] h. Model sources A/B/C — local import, HF portal, BYOK
+---
 
 ## STAGE-TRACKER
-| Stage | Status | Commits | Notes/Deviations |
+| Stage | Status | Commits | Notes |
 |---|---|---|---|
+| process: AGENTS.md | DONE | 7febb49 | living tracker created |
 | a CPU + UI + CI | DONE | eff947b..a822f6c chain | |
-| b Vulkan + auto-tuner | PARTIAL | 1e6386b, a9a4fba | MANUAL toggle only — auto-tuner + per-(device,model) config persistence NOT built. Missing: auto-ngl, benchmarking, config persistence. |
-| c mmproj pipeline | NOT STARTED | | user skipped 4B benchmark |
+| b Vulkan + auto-tuner | PARTIAL | 1e6386b | Vulkan OK; **auto-tuner + per-(device,model) config persistence missing** |
+| c mmproj capability pipeline | NOT STARTED | | |
 | d HTTP server | NOT STARTED | | |
-| e Thinking + PresetEngine | NOT STARTED | | |
-| f Audio | NOT STARTED | | |
-| g QNN | NOT STARTED | | optional |
-| h Model sources | NOT STARTED | | |
+| e Thinking mode + PresetEngine | NOT STARTED | | |
+| f Audio modality | NOT STARTED | | |
+| g QNN NPU flavor | SKIPPED (optional) | | Qualcomm-only, licensing risk |
+| h Model sources A/B/C | NOT STARTED | | |
+| quick wins (off-plan) | DONE | a9a4fba, ef550f6 | auto-load model, tok/s, chat history, clear button |
 
 ## DEVIATIONS (work outside plan order)
-- Auto-load last model + tok/s readout (`a9a4fba`) — not in plan stages, quick win
-- Chat history persistence + clear button (`ef550f6`) — not in plan stages, quick win
+- Auto-load last model + tok/s readout (`a9a4fba`) — not a plan stage
+- Chat history persistence + clear button (`ef550f6`) — not a plan stage
+
+---
+
+# EMBEDDED MASTER SPEC — Android llama.cpp Multimodal Chat App (v4)
+
+## 0. One-line summary
+An Android app that runs GGUF LLMs + GGUF mmproj projectors on-device using every
+accelerator it can reach (GPU via Vulkan, CPU with tuned SIMD/threads, NPU only where
+genuinely supported), provides a modern multimodal chat UI with thinking mode and
+auto-presets, exposes the loaded model over an OpenAI-compatible HTTP server for other
+apps, and can source models three ways: local files, an in-app HuggingFace portal, or BYOK
+cloud providers.
+
+## 1. Architecture overview (layers)
+- UI Layer (Compose): Chat screen · Model manager · Settings · Server panel; input composer generated from declared model capabilities
+- Domain Layer: ChatRepository · ModelRepository · PresetEngine · CapabilityRegistry · ThinkingModeController
+- Inference Abstraction: `LocalEngine → JNI → llama.cpp`  |  `CloudEngine → HTTP → provider APIs (BYOK)`
+- Native Layer (JNI/NDK): llama.cpp core · ggml backends (CPU/Vulkan/QNN) · mtmd (multimodal) · projector pipeline · KV cache mgmt
+- Server Layer: OpenAI-compatible + llama.cpp native endpoints; binds to loaded LocalEngine, serializes requests
+- Storage Layer: Room (chats, models, providers, presets) · SAF · app files
+
+Key design rule: UI/domain never know local-vs-cloud, and never hardcode a modality. Both
+come from the `CapabilityRegistry`.
+
+## 2. Accelerator strategy (GPU / NPU / CPU)
+| Backend | Coverage | Status | Notes |
+|---|---|---|---|
+| CPU | 100% of devices | Primary, always available | NEON, i8mm, dotprod; thread count = perf cores; batch tuning |
+| Vulkan | ~all modern Android (2016+) | Primary GPU path | `-ngl` layer offload; the real reason "CPU-only" apps are fast |
+| OpenCL / Adreno | Qualcomm | Optional secondary | Legacy path; Vulkan generally preferred |
+| QNN / Hexagon NPU | Qualcomm only | Experimental, optional flavor | Needs pre-quantized (e.g. Q4_0) + model-specific conversion; SDK licensing to check |
+| NNAPI | — | Not used | Deprecated/frozen, no benefit |
+
+Reality checks:
+- MediaTek / Exynos / Tensor NPUs have no usable llama.cpp backend. No promises there.
+- "Uses every accelerator" = auto-detect, rank, fall back gracefully — not NPU on every phone.
+
+Auto-tuner: on model load, benchmark candidate configs (threads, ngl, batch size) on a tiny
+prompt, pick the fastest that fits RAM. Persist the winning config per (device, model) pair.
+
+Pocket AI note: its "no GPU access" message is almost certainly misreporting — it uses
+Vulkan offload. Speed = Q4 quant + small model + flash attention + KV-cache quant + mmap'd
+weights (fast load = page-in, not compute). No hidden CPU trick. Forced pure-CPU on a 3B Q4
+mid-range chip ≈ 5–12 tok/s.
+
+## 3. Multimodality — capability-driven, not vision-only
+mmproj is a projector into the LLM embedding space, not a "vision file". Whatever modality
+it was trained for, it handles.
+
+Pipeline (one, generic): `input bytes → modality preprocessor → modality encoder → projection → embed splice → LLM`
+
+Capability detection: read mmproj GGUF metadata (`clip.projector_type`, encoder arch, tensor
+shapes, modality tags) → infer modality set. One `CapabilityRegistry` entry per loaded model:
+```kotlin
+data class ModelCapabilities(
+    val text: Boolean,
+    val vision: Boolean,
+    val audio: Boolean,
+    val video: Boolean,        // frame sampling over vision
+    val reasoning: Boolean,    // supports thinking mode
+    val embeddings: Boolean,   // can serve /v1/embeddings
+    val tools: Boolean,
+)
+```
+Consequences:
+- Input composer is GENERATED from capabilities — image button only if vision, mic only if audio.
+- New upstream projector types are picked up by capability routing; no app update needed.
+- Upstream reality: vision mature; audio experimental (Qwen2-Audio, Ultravox, Voxtral); video = frame extraction through vision.
+
+## 4. Model sources — three paths
+A. Local import: SAF/file picker; auto-detect and pair its mmproj; validate GGUF header + magic + arch; store reference or copy into app storage (user's choice).
+B. In-app HuggingFace portal: NOT a redirect. Native in-app browser over the HF API. Search all HF models, open repo, list files/variants/quants with sizes. Download model + mmproj inside the app: progress, resume, integrity check. Optional HF token for gated repos. Storage manager + cleanup.
+C. BYOK cloud providers: ship preset provider configs with correct base URLs + auth scheme (OpenAI, Anthropic, Google Gemini, Groq, Mistral, xAI, OpenRouter, DeepSeek, Together, Fireworks, Cerebras, Cohere, …). Flow: pick provider → paste API key → app fetches provider model list → search + select. Fallback: providers w/o list endpoint use a static curated list. Cloud models implement the SAME engine interface as local ones, so streaming, samplers, thinking mode, and the server all work uniformly (server fronts local models by default; cloud proxying is a toggle).
+
+## 5. Embedded HTTP server
+- OpenAI-compatible: `/v1/chat/completions` (SSE + non-streaming), `/v1/completions`, `/v1/models`, `/v1/embeddings` (if supported)
+- llama.cpp native: `/completion`, `/tokenize`, `/detokenize`, `/health`, `/props` (context size, chat template, modalities, sampler defaults so clients auto-configure)
+- Multimodal over the wire: OpenAI `image_url` parts + base64 audio parts
+- Binding: default `127.0.0.1:8080`; opt-in `0.0.0.0` for LAN. LAN off by default.
+- Auth: optional bearer token; LAN mode warns/requires a key
+- Lifecycle: foreground service, survives UI backgrounding. One model → one server → many clients
+- Concurrency: single inference queue protecting the KV cache; optional second context slot (costs RAM)
+- CORS configurable for browser clients
+
+## 6. Chat UI & features
+- Streaming responses, stop generation, regenerate, edit-and-resend
+- Chat history, folders, branches (edit from any message)
+- Markdown + code blocks with syntax highlighting + copy
+- System prompt per chat; persona/character support
+- Full sampler panel: temperature, top-p, top-k, min-p, typical-p, repeat/frequency/presence penalties, seed, mirostat, DRY, XTC
+- Context length, context shift strategy, stop strings, batch size, threads, ngl
+- Multi-chat, export/import (JSON), search across chats
+- Attachments: images/audio/documents per capabilities; doc attach with RAG-lite chunking
+- Token stats: prompt tok, gen tok, tok/s, context usage bar
+- Thinking mode: toggle + collapsible reasoning block; auto-on for reasoning models; per-model default; separate render styling for the trace
+
+## 7. Instant defaults on model load (PresetEngine)
+1. Read GGUF metadata: arch, param count, quant type, context length, chat template, vocab, projector attached?
+2. Detect family (Llama / Qwen / Gemma / Phi / Mistral / DeepSeek / …)
+3. Apply a preset: context size, threads, batch, sampler defaults, chat template, reasoning toggle, GPU layer offload, stop strings
+4. Run the auto-tuner (§2) to finalize perf settings
+5. Persist overrides per model so user tweaks stick
+
+## 8. Build & CI (GitHub Actions)
+- NDK + CMake; primary ABI `arm64-v8a` (optional `x86_64` for emulator)
+- Build llama.cpp + ggml backends; Vulkan headers + ShaderGen/glslc step
+- QNN as a separate optional flavor (Qualcomm SDK licensing must be checked before shipping)
+- Pipeline: cache NDK/CMake deps → build native → assemble APK → sign → artifact
+- Highest-risk area. Multi-hour pipeline, expect debugging.
+
+## 9. Staging plan (build order)
+| # | Stage | Deliverable |
+|---|---|---|
+| a | llama.cpp CPU only | Working chat UI, GH Actions green |
+| b | Vulkan offload | Auto ngl + auto-tuner |
+| c | mmproj capability pipeline | Modality-agnostic projector + dynamic input UI |
+| d | HTTP server | OpenAI + native endpoints, foreground service |
+| e | Thinking mode + PresetEngine | Auto-presets, reasoning UI |
+| f | Audio modality | Audio projector support |
+| g | QNN NPU flavor | Optional Qualcomm-only build |
+| h | Model sources A/B/C | Local import, HF portal, BYOK |
+
+Note (user override 2026-10-13): stages c–h are to be implemented in ONE flow with a single
+CI build, not stage-by-stage.
+
+## 10. Known risks / open questions
+- GH Actions native build complexity (biggest risk)
+- QNN SDK licensing for redistribution
+- Audio modality maturity upstream
+- HF API rate limits / gated repo handling
+- RAM ceiling on low-end devices → model-size gating + warnings
+- Thermal throttling on sustained generation
+- Provider API drift (BYOK) → keep provider configs data-driven/updatable
+
+## 11. Reference product framing
+Positioning: "Pocket AI, but better, with a lot more features."
+
+| Area | Pocket AI (reference) | This app (target) |
+|---|---|---|
+| Local GGUF models | Yes | Yes |
+| mmproj / multimodality | Image-focused | Capability-driven: any modality the projector declares |
+| Accelerators | Reports CPU-only (actually Vulkan) | Honest auto-detect GPU/CPU/NPU + auto-tuner + per-device persisted config |
+| In-app model browser | Yes | Yes + quant/variant listing, resume, integrity check, storage mgmt |
+| Cloud models | Limited/none | Full BYOK multi-provider with preset configs + model list fetch |
+| Embedded server | No | Yes — OpenAI-compatible + native endpoints |
+| Thinking mode | Basic/none | Full toggle + collapsible trace + per-model default + auto-on |
+| Sampler controls | Limited | Full panel (temp, top-p/k, min-p, typical, penalties, seed, mirostat, DRY, XTC) |
+| Auto-defaults on load | Basic | PresetEngine: family detection + perf auto-tune |
+| Chat mgmt | Basic | Folders, branches, search, export/import |
+| Token stats | Minimal | tok/s, prompt/gen tokens, context usage bar |
+
+- UX baseline: mirror Pocket AI's model-manager + in-app-browser flows, then add extras
+- Perf baseline: match or beat its tok/s on same device + model (Vulkan offload)
+- Do NOT copy its misleading "no GPU access" messaging — report the actual active backend
+
+---
+
+## DEVICE FACTS (verified)
+- SoC SM8350 / Adreno 660 (Qualcomm); UMA; fp16; no matrix cores; `ro.hardware.vulkan=adreno`
+- Android 15 / One UI 7; fingerprint `samsung/t2quew/t2q:15/AP3A.240905.015.A2/G996U1UESIHYL1:user/release-keys`
+- Not rooted (no `run-as`), so prefs verified behaviorally, not by reading files
+- Local models: `.../Hermes/models/qwen 3.5-2b claude/Qwen3.5-2B-Claude-4.6-Q4_K_M.gguf` (1.27 GB) + `...-mmproj-Q8_0.gguf` (365 MB); `.../Qwen3.5-4b-Uncensored-NonReasoning/Qwen3.5-4b-Uncensored-NonReasoning.Q4_K_M.gguf`
+- Repo: `/sdcard/Download/hermes-llama-android`, remote `git@github.com:clyxhub/Hermes-llama-android.git`, branch `main`
+- Vulkan fix: `HERMES-PATCH(vulkan-device-dispatcher)` + `HERMES-PATCH(vulkan-device-memory)` in `app/src/main/cpp/CMakeLists.txt`; `HERMES-PATCH(cpu-only-devices)` in `llama_jni.cpp`; verify via `strings libggml-vulkan.so | grep -c 'memory budget disabled'` == 1
+- Build install: fresh CI keystore each run → `pm uninstall com.hermes.llama; pm install -r /data/local/tmp/<apk>`
