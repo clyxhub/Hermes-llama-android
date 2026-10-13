@@ -62,6 +62,18 @@ Master spec source: `/sdcard/Download/Android-llama-cpp-app-plan.md` (v4). Full 
 
 ---
 
+## BUILD RECORD
+| Run | SHA | Result | Verification |
+|---|---|---|---|
+| 38381977970 | 994d98c | success | libs unpacked: `libggml-vulkan.so` 20.5 MB, `libmtmd.so` 1.39 MB, `libllama.so`, `libllama-common.so`, `libhermes_llama.so`; `strings libggml-vulkan.so \| grep -c 'memory budget disabled'` = **1**; mtmd symbols in `libhermes_llama.so` = **19**; installed `pm install -r -d`; `topResumedActivity` = `.MainActivity`, no `FATAL`. |
+
+Single-flow build per Rule 8 — the **one** CI build for stages b(complete)/c/d/e/h.
+
+Not yet exercised on-device (recommended next manual test): actual model load +
+projector auto-pair + a real generation (needs a SAF file pick, UI-driven).
+
+---
+
 # EMBEDDED MASTER SPEC — Android llama.cpp Multimodal Chat App (v4)
 
 ## 0. One-line summary
